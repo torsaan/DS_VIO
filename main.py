@@ -538,7 +538,7 @@ def ensemble_predictions(models_dict, test_loaders):
     return ensemble_preds, targets, ensemble_acc
 
 def main():
-    data_dir = "Real Life Violence Dataset"
+    data_dir = 'C:\Github\DS_VIO\Data\VioNonVio'
     
     # Prepare data
     train_data, val_data, test_data = prepare_data(data_dir)
