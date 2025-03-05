@@ -13,6 +13,7 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import timm
 from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset
 
 # Constants
 NUM_FRAMES = 32  # Number of frames to sample from each video
@@ -25,13 +26,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ===== DATASET AND DATA LOADING =====
 
 class VideoDataset(Dataset):
-    def __init__(self, video_paths, labels, transform=None, num_frames=32, model_type='3d_cnn'):
+    def __init__(self, video_paths, labels, transform=None, num_frames=32, model_type='3d_cnn', frame_size=(112,112)):
         self.video_paths = video_paths
         self.labels = labels
         self.transform = transform
         self.num_frames = num_frames
         self.model_type = model_type  # Used to determine preprocessing
-    
+        self.frame_size = frame_size
+
     def __len__(self):
         return len(self.video_paths)
     
@@ -40,10 +42,15 @@ class VideoDataset(Dataset):
         frames = []
         cap = cv2.VideoCapture(video_path)
         
+        if not cap.isOpened():
+            print(f"Warning: Could not open video file {video_path}")
+            return None
+        
         # Get total frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         if total_frames <= 0:
+            print(f"Warning: No frames found in {video_path}")
             return None
             
         # Calculate sampling rate to get num_frames
@@ -57,16 +64,21 @@ class VideoDataset(Dataset):
         for i in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
-            if ret:
+            if not ret:
                 # Convert from BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
+                frame = np.zeros((self.frame_size[0], self.frame_size[1],3), dtype=np.uint8)
+                #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                #frames.append(frame)
             else:
                 # If reading fails, create a black frame
-                frames.append(np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8))
+                #frames.append(np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8))
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.resize(frame, self.frame_size)
+
+            frames.append(frame)
         
         cap.release()
-        return np.array(frames)
+        return np.array(frames, dtype=np.uint8)
     
     def __getitem__(self, idx):
         video_path = self.video_paths[idx]
@@ -76,33 +88,23 @@ class VideoDataset(Dataset):
         frames = self.read_video(video_path)
         
         if frames is None or len(frames) < self.num_frames:
-            # Handle error case
-            frames = np.zeros((self.num_frames, FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
+            frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
         
         # Process frames based on model type
         if self.model_type == '3d_cnn':
-            # Process for 3D CNN: [C, T, H, W]
             if self.transform:
-                transformed_frames = []
-                for frame in frames:
-                    transformed_frames.append(self.transform(Image.fromarray(frame)))
-                # Stack frames into tensor [C, T, H, W]
-                frames_tensor = torch.stack(transformed_frames, dim=1)
+                transformed_frames = [self.transform(Image.fromarray(frame)) for frame in frames]
+                frames_tensor = torch.stack(transformed_frames, dim=1)  # Shape: [C, T, H, W]
             else:
-                # Convert to tensor [T, H, W, C] -> [C, T, H, W]
-                frames_tensor = torch.from_numpy(frames.transpose(3, 0, 1, 2).astype(np.float32))
-                frames_tensor = frames_tensor / 255.0  # Normalize to [0, 1]
+                frames_tensor = torch.from_numpy(frames.transpose(3, 0, 1, 2).astype(np.float32))  # Convert to [C, T, H, W]
+                frames_tensor /= 255.0  # Normalize
         
         elif self.model_type in ['2d_cnn_lstm', 'transformer', 'transfer_learning']:
-            # Process for 2D CNN+LSTM or Transformer: list of [C, H, W]
             if self.transform:
-                transformed_frames = []
-                for frame in frames:
-                    transformed_frames.append(self.transform(Image.fromarray(frame)))
-                frames_tensor = torch.stack(transformed_frames)  # [T, C, H, W]
+                transformed_frames = [self.transform(Image.fromarray(frame)) for frame in frames]
+                frames_tensor = torch.stack(transformed_frames)  # Shape: [T, C, H, W]
             else:
-                # Convert to tensor [T, H, W, C] -> [T, C, H, W]
-                frames = frames.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
+                frames = frames.transpose(0, 3, 1, 2).astype(np.float32) / 255.0  # Convert to [T, C, H, W]
                 frames_tensor = torch.from_numpy(frames)
         
         return frames_tensor, torch.tensor(label, dtype=torch.long)
@@ -331,7 +333,37 @@ def validate(model, data_loader, criterion, device):
 
 # ===== MAIN FUNCTION =====
 
-def prepare_data(data_dir):
+def load_video_frames(video_path, num_frames=32):
+
+    print(f"Processing video: {video_path}")
+    
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if total_frames <= 0:
+        print(f"Warning: No frames found in {video_path}")
+        cap.release()
+        return None
+
+    if total_frames >= num_frames:
+        frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+    else:
+        # Loop frames to ensure we get num_frames
+        frame_indices = np.array([i % total_frames for i in range(num_frames)])
+
+    frames = []
+    for i in frame_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        if not ret:
+            frame = np.zeros((112, 112, 3), dtype=np.uint8)  # Black frame for missing frames
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+    cap.release()
+    return np.array(frames)
+
+def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
+
     # Collect video paths and labels
     violence_dir = os.path.join(data_dir, "Violence")
     nonviolence_dir = os.path.join(data_dir, "NonViolence")
@@ -351,16 +383,22 @@ def prepare_data(data_dir):
             video_paths.append(os.path.join(nonviolence_dir, video_name))
             labels.append(0)
     
+    # Now load frames for each video and store as tensor
+    video_frames = []
+    for video_path in video_paths:
+        frames = load_video_frames(video_path, num_frames)
+        video_frames.append(frames)
+
     # Split into train, validation, test
-    train_paths, test_paths, train_labels, test_labels = train_test_split(
-        video_paths, labels, test_size=0.3, random_state=42, stratify=labels
+    train_frames, test_frames, train_labels, test_labels = train_test_split(
+        video_frames, labels, test_size=0.3, random_state=42, stratify=labels
     )
     
-    val_paths, test_paths, val_labels, test_labels = train_test_split(
-        test_paths, test_labels, test_size=0.5, random_state=42, stratify=test_labels
+    val_frames, test_frames, val_labels, test_labels = train_test_split(
+        test_frames, test_labels, test_size=0.5, random_state=42, stratify=test_labels
     )
     
-    return (train_paths, train_labels), (val_paths, val_labels), (test_paths, test_labels)
+    return (train_frames, train_labels), (val_frames, val_labels), (test_frames, test_labels)
 
 def train_model(model_name, model, train_loader, val_loader, num_epochs=30, device=DEVICE):
     criterion = nn.CrossEntropyLoss()
@@ -538,6 +576,8 @@ def ensemble_predictions(models_dict, test_loaders):
     return ensemble_preds, targets, ensemble_acc
 
 def main():
+    print("Main function started...")
+
     data_dir = 'C:\Github\DS_VIO\Data\VioNonVio'
     
     # Prepare data
