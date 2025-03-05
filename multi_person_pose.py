@@ -382,9 +382,9 @@ def batch_process_videos(video_dir, output_dir, target_fps=15, include_distances
 
 def main():
     parser = argparse.ArgumentParser(description='Extract multi-person pose keypoints from videos')
-    parser.add_argument('--video_dir', type=str, default='./Data/VioNonVio', 
+    parser.add_argument('--video_dir', type=str, default='C:\Github\DS_VIO\Data\VioNonVio', 
                         help='Directory containing videos')
-    parser.add_argument('--output_dir', type=str, default='./Data/MultiPose',
+    parser.add_argument('--output_dir', type=str, default='./Data/Pose',
                         help='Directory to save pose keypoints')
     parser.add_argument('--fps', type=int, default=15,
                         help='Target FPS for extraction')
