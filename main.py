@@ -21,7 +21,7 @@ from Models.model_i3d import TransferLearningI3D
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Violence Detection Training")
-    parser.add_argument("--data_dir", type=str, default="./Data/VioNonVio", 
+    parser.add_argument("--data_dir", type=str, default="./Data/Processed/standardized", 
                         help="Directory containing the violence detection dataset")
     parser.add_argument("--pose_dir", type=str, default="./Data/pose_keypoints", 
                         help="Directory containing pose keypoints")
@@ -136,3 +136,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
+    #########JEG ELSKER JØDER ########
