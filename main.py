@@ -14,6 +14,10 @@ from Models.model_2dcnn_lstm import Model2DCNNLSTM
 from Models.model_transformer import VideoTransformer
 from Models.model_i3d import TransferLearningI3D
 
+
+
+
+
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Violence Detection Training")
@@ -84,18 +88,21 @@ def main():
     for model_type in args.model_types:
         print(f"\n{'='*20} Setting up {model_type} {'='*20}")
         
-        # Get data loaders for this model type
+        # Only use pose_dir if use_pose flag is True; otherwise, set to None.
+        current_pose_dir = args.pose_dir if args.use_pose else None
+
+        # Get data loaders for this model type using current_pose_dir
         train_loader, val_loader, test_loader = get_dataloaders(
             train_paths, train_labels, 
             val_paths, val_labels, 
             test_paths, test_labels,
-            args.pose_dir,
+            current_pose_dir,
             batch_size=args.batch_size,
             num_workers=4,
             model_type=model_type
         )
         
-        # Initialize model
+        # Initialize model (for simple_cnn, no pose is used)
         model = initialize_model(model_type, device, args.use_pose)
         
         # Train model

@@ -17,9 +17,9 @@ def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, r
         train_paths, train_labels, val_paths, val_labels, test_paths, test_labels
     """
     # Define paths to the VioNonVio folders
-    violence_dir = os.path.join(data_root, "VioNonVio", "Violence")
-    nonviolence_dir = os.path.join(data_root, "VioNonVio", "NonViolence")
-    
+    violence_dir = os.path.join(data_root, "Violence")
+    nonviolence_dir = os.path.join(data_root, "NonViolence")
+        
     # Collect video paths and labels
     video_paths = []
     labels = []
