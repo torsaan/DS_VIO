@@ -14,6 +14,8 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 import timm
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
+from dataloader import EnhancedViolenceDataset
+
 
 # Constants
 NUM_FRAMES = 32  # Number of frames to sample from each video
@@ -333,35 +335,6 @@ def validate(model, data_loader, criterion, device):
 
 # ===== MAIN FUNCTION =====
 
-def load_video_frames(video_path, num_frames=32):
-
-    print(f"Processing video: {video_path}")
-    
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if total_frames <= 0:
-        print(f"Warning: No frames found in {video_path}")
-        cap.release()
-        return None
-
-    if total_frames >= num_frames:
-        frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-    else:
-        # Loop frames to ensure we get num_frames
-        frame_indices = np.array([i % total_frames for i in range(num_frames)])
-
-    frames = []
-    for i in frame_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if not ret:
-            frame = np.zeros((112, 112, 3), dtype=np.uint8)  # Black frame for missing frames
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    cap.release()
-    return np.array(frames)
-
 def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
 
     # Collect video paths and labels
@@ -370,6 +343,10 @@ def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
     
     video_paths = []
     labels = []
+
+    dataset = EnhancedViolenceDataset(
+    video_paths=[], labels=[], training=False
+    )
     
     # Violence videos (label 1)
     for video_name in os.listdir(violence_dir):
@@ -386,7 +363,7 @@ def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
     # Now load frames for each video and store as tensor
     video_frames = []
     for video_path in video_paths:
-        frames = load_video_frames(video_path, num_frames)
+        frames = dataset.read(video_path)
         video_frames.append(frames)
 
     # Split into train, validation, test
