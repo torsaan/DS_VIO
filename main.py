@@ -7,7 +7,10 @@ import numpy as np
 import cv2
 from PIL import Image
 from torchvision import transforms
-from torchvision.models.video import r3d_18
+##from torchvision.models.video import r3d_18
+
+from torchvision.models.video import r3d_18, R3D_18_Weights
+
 from torchvision.models import resnet50
 import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
@@ -15,6 +18,9 @@ import timm
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 from dataloader import EnhancedViolenceDataset
+
+#weights = R3D_18_Weights.KINETICS400_V1
+#model = r3d_18(weights=R3D_18_Weights.KINETICS400_V1)
 
 
 # Constants
@@ -42,11 +48,12 @@ class VideoDataset(Dataset):
     def read_video(self, video_path):
         # Read video and extract frames
         frames = []
+        print(f"Loading video from: {video_path}")
         cap = cv2.VideoCapture(video_path)
         
         if not cap.isOpened():
             print(f"Warning: Could not open video file {video_path}")
-            return None
+            return []
         
         # Get total frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -344,9 +351,7 @@ def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
     video_paths = []
     labels = []
 
-    dataset = EnhancedViolenceDataset(
-    video_paths=[], labels=[], training=False
-    )
+
     
     # Violence videos (label 1)
     for video_name in os.listdir(violence_dir):
@@ -360,10 +365,15 @@ def prepare_data(data_dir, num_frames = 32, frame_size =(112,112)):
             video_paths.append(os.path.join(nonviolence_dir, video_name))
             labels.append(0)
     
+    dataset = EnhancedViolenceDataset(
+    video_paths=[], labels=[], training=False
+    )
+
     # Now load frames for each video and store as tensor
     video_frames = []
     for video_path in video_paths:
-        frames = dataset.read(video_path)
+        print(f"Loading frames for: {video_path}")
+        frames = dataset.read_video(video_path)
         video_frames.append(frames)
 
     # Split into train, validation, test

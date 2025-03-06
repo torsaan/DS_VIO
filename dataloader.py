@@ -63,7 +63,7 @@ class EnhancedViolenceDataset(Dataset):
     def __len__(self):
         return len(self.video_paths)
     
-    def read_video(self, video_path):
+    def read_video(self, video_path, num_frames = 32, frame_size =(112,112)):
         """
         Read video frames at the target FPS rate.
         """
@@ -84,9 +84,11 @@ class EnhancedViolenceDataset(Dataset):
             
             # Only add frames that are at the sampling interval
             if frame_idx % sample_interval == 0:
+                #resize frame to the target size
+                frame_resized = cv2.resize(frame, frame_size)
                 # Convert frame from BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
+                frame_resized = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                frames.append(frame_resized)
             
             frame_idx += 1
         
@@ -99,7 +101,7 @@ class EnhancedViolenceDataset(Dataset):
             frames = [frames[i] for i in indices]
         else:
             # Pad with the last frame if video is too short
-            last_frame = frames[-1] if frames else np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
+            last_frame = frames[-1] if frames else np.zeros((frame_size[1], frame_size[0], 3), dtype=np.uint8)
             while len(frames) < self.num_frames:
                 frames.append(last_frame.copy())
         
