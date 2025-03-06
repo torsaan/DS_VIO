@@ -1,467 +1,556 @@
 #!/usr/bin/env python3
-# multi_person_pose.py
-
 import os
 import cv2
 import torch
 import numpy as np
-import mediapipe as mp
 import csv
 import argparse
 from tqdm import tqdm
 import glob
+import mediapipe as mp
 
-def load_yolo():
-    """
-    Load YOLO model for person detection from local file
-    """
-    try:
+class PersonTracker:
+    def __init__(self, target_fps=15, max_persons=10, visualization_dir=None):
+        """
+        Initialize the person tracker with advanced detection and tracking capabilities.
+        
+        Args:
+            target_fps (int): Target frames per second to process
+            max_persons (int): Maximum number of persons to track
+            visualization_dir (str): Directory to save visualization outputs
+        """
+        # YOLO for person detection
         from ultralytics import YOLO
-        import os
         
-        # Get the current directory
+        # Use the recommended YOLOv5lu model
+        model_path = 'C:\\DS_VIO\\yolov5lu.pt'
+        
+        self.yolo_model = YOLO(model_path)
+        self.yolo_model.conf = 0.25  # Confidence threshold
+        self.yolo_model.iou = 0.45   # NMS IoU threshold
+        self.yolo_model.classes = [0]  # Only detect persons (COCO class 0)
+        self.yolo_model.max_det = max_persons  # Maximum detections per image
+        
+        # MediaPipe for pose estimation
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.pose = self.mp_pose.Pose(
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+            model_complexity=1  # 0 is fastest, 2 is most accurate
+        )
+        
+        self.target_fps = target_fps
+        self.max_persons = max_persons
+        self.visualization_dir = visualization_dir
+        
+        # Tracking parameters
+        self.tracks = []
+        self.next_track_id = 0
+        self.iou_threshold = 0.3
+
+    def resize_image(self, image, target_size=(640, 640)):
+        """
+        Resize image maintaining aspect ratio with padding
+        
+        Args:
+            image: Input image
+            target_size: Target size for YOLO model
+        
+        Returns:
+            Resized image
+        """
+        h, w = image.shape[:2]
+        new_w, new_h = target_size
+        
+        # Calculate scaling factor
+        scale = min(new_w / w, new_h / h)
+        
+        # Calculate new dimensions
+        resized_w = int(w * scale)
+        resized_h = int(h * scale)
+        
+        # Resize image
+        resized_image = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+        
+        # Create padded image
+        padded_image = np.full((new_h, new_w, 3), 114, dtype=np.uint8)
+        
+        # Calculate coordinates to paste resized image
+        start_x = (new_w - resized_w) // 2
+        start_y = (new_h - resized_h) // 2
+        
+        padded_image[start_y:start_y+resized_h, start_x:start_x+resized_w] = resized_image
+        
+        return padded_image
+
+    def detect_persons_yolo(self, image):
+        """
+        Detect persons in an image using YOLO.
+        
+        Args:
+            image: BGR image
+        
+        Returns:
+            List of bounding boxes [x1, y1, x2, y2, confidence]
+        """
+        # Resize image to match YOLO model input
+        resized_image = self.resize_image(image)
+        
+        # YOLO expects RGB
+        img_rgb = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        
+        # Run detection
+        results = self.yolo_model(img_rgb)
+        predictions = results[0].boxes.xyxy.cpu().numpy()
+        
+        # Adjust bounding boxes back to original image scale
+        h, w = image.shape[:2]
+        new_h, new_w = resized_image.shape[:2]
+        scale_x = w / new_w
+        scale_y = h / new_h
+        
+        persons = []
+        for pred in predictions:
+            # Check the number of elements in each prediction
+            if pred.size == 6:
+                x1, y1, x2, y2, conf, cls = pred
+            elif pred.size == 4:
+                x1, y1, x2, y2 = pred
+                conf = 1.0  # default confidence
+                cls = 0     # assume person
+            else:
+                continue
+            
+            if int(cls) == 0:  # Only persons
+                # Scale back to original image coordinates
+                scaled_x1 = max(0, x1 * scale_x)
+                scaled_y1 = max(0, y1 * scale_y)
+                scaled_x2 = min(w, x2 * scale_x)
+                scaled_y2 = min(h, y2 * scale_y)
+                
+                persons.append([scaled_x1, scaled_y1, scaled_x2, scaled_y2, conf])
+        
+        return persons
+
+    # Rest of the methods remain the same as in the previous implementation
+#!/usr/bin/env python3
+import os
+import cv2
+import torch
+import numpy as np
+import csv
+import argparse
+from tqdm import tqdm
+import glob
+import mediapipe as mp
+
+class PersonTracker:
+    def __init__(self, target_fps=15, max_persons=10, visualization_dir=None):
+        """
+        Initialize the person tracker with advanced detection and tracking capabilities.
+        
+        Args:
+            target_fps (int): Target frames per second to process
+            max_persons (int): Maximum number of persons to track
+            visualization_dir (str): Directory to save visualization outputs
+        """
+        # YOLO for person detection
+        from ultralytics import YOLO
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.dirname(current_dir)  # Go up one level from utils/ to project root
-        
-        # Path to model file in project directory
+        project_dir = os.path.dirname(current_dir)
         model_path = os.path.join(project_dir, 'yolov5l.pt')
         
-        # Verify model exists
-        if not os.path.exists(model_path):
-            print(f"Model file not found at {model_path}")
-            print("Please download the YOLOv5 model and place it in your project directory")
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-            
-        # Load model from local file
-        model = YOLO(model_path)
+        self.yolo_model = YOLO(model_path)
+        self.yolo_model.conf = 0.25  # Confidence threshold
+        self.yolo_model.iou = 0.45   # NMS IoU threshold
+        self.yolo_model.classes = [0]  # Only detect persons (COCO class 0)
+        self.yolo_model.max_det = max_persons  # Maximum detections per image
         
-        # Set model parameters
-        model.conf = 0.25  # Confidence threshold
-        model.iou = 0.45   # NMS IoU threshold
-        model.classes = [0]  # Only detect persons (class 0 in COCO)
-        model.max_det = 20   # Maximum number of detections per image
+        # MediaPipe for pose estimation
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.pose = self.mp_pose.Pose(
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
         
-        print(f"Successfully loaded YOLOv5 model from {model_path}")
-        return model
+        self.target_fps = target_fps
+        self.max_persons = max_persons
+        self.visualization_dir = visualization_dir
         
-    except Exception as e:
-        print(f"Error loading YOLOv5 model: {e}")
-        raise RuntimeError("Failed to load YOLOv5 model")
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    except Exception as e:
-        print(f"Error loading YOLOv5 model: {e}")
-        print("Trying alternative approach...")
+        # Tracking parameters
+        self.tracks = []
+        self.next_track_id = 0
+        self.iou_threshold = 0.3
         
-        # Alternative approach using direct model loading
-        try:
-            import torch
-            
-            # Try to download and load model without using torch.hub
-            from ultralytics import YOLO
-            model = YOLO('yolov5m.pt')  # This will download the model if needed
-            
-            return model
-        except Exception as e2:
-            print(f"Failed to load YOLOv5 using alternative approach: {e2}")
-            raise RuntimeError("Cannot load YOLOv5 model. Please install YOLOv5 manually.")
+    def compute_iou(self, box1, box2):
+        """
+        Compute Intersection over Union (IoU) between two boxes.
+        Box format: [x1, y1, x2, y2]
+        """
+        x1_int = max(box1[0], box2[0])
+        y1_int = max(box1[1], box2[1])
+        x2_int = min(box1[2], box2[2])
+        y2_int = min(box1[3], box2[3])
+        
+        inter_area = max(0, x2_int - x1_int) * max(0, y2_int - y1_int)
+        box1_area = max(0, box1[2]-box1[0]) * max(0, box1[3]-box1[1])
+        box2_area = max(0, box2[2]-box2[0]) * max(0, box2[3]-box2[1])
+        union_area = box1_area + box2_area - inter_area
+        return inter_area / union_area if union_area > 0 else 0
 
-def setup_pose_detector():
-    """Initialize MediaPipe pose detector"""
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        model_complexity=1  # 0=Lite, 1=Full, 2=Heavy
-    )
-    return pose
-
-def detect_persons_yolo(image, yolo_model):
-    """
-    Detect persons in an image using YOLO
-    
-    Args:
-        image: BGR image
-        yolo_model: YOLOv5 model
+    def track_detections(self, detections, frame_idx):
+        """
+        Assign track IDs to detections using IoU matching.
         
-    Returns:
-        List of bounding boxes [x1, y1, x2, y2, confidence]
-    """
-    # YOLOv5 expects RGB
-    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    # Run YOLO
-    results = yolo_model(img_rgb)
-    
-    # Extract person detections
-    persons = []
-    predictions = results.xyxy[0].cpu().numpy()  # [x1, y1, x2, y2, conf, cls]
-    
-    for pred in predictions:
-        x1, y1, x2, y2, conf, cls = pred
-        if int(cls) == 0:  # Class 0 is person in COCO
-            persons.append([x1, y1, x2, y2, conf])
-    
-    return persons
-
-def extract_pose_from_detection(image, detection, pose_detector, frame_width, frame_height):
-    """
-    Extract pose keypoints for a single detected person
-    
-    Args:
-        image: BGR image
-        detection: Bounding box [x1, y1, x2, y2, conf]
-        pose_detector: MediaPipe pose detector
-        frame_width, frame_height: Original frame dimensions
+        Args:
+            detections: List of detections [x1, y1, x2, y2, conf]
+            frame_idx: Current frame index
         
-    Returns:
-        List of normalized keypoints [(x1,y1), (x2,y2), ...]
-    """
-    # Extract bounding box
-    x1, y1, x2, y2, _ = detection
-    
-    # Add some padding
-    padding = 0.1
-    width = x2 - x1
-    height = y2 - y1
-    
-    # Apply padding with bounds checking
-    x1_padded = max(0, x1 - width * padding)
-    y1_padded = max(0, y1 - height * padding)
-    x2_padded = min(frame_width, x2 + width * padding)
-    y2_padded = min(frame_height, y2 + height * padding)
-    
-    # Crop image to person bounding box
-    person_image = image[int(y1_padded):int(y2_padded), int(x1_padded):int(x2_padded)]
-    
-    # Skip if crop is empty
-    if person_image.size == 0:
-        return None
-    
-    # Convert to RGB for MediaPipe
-    rgb_image = cv2.cvtColor(person_image, cv2.COLOR_BGR2RGB)
-    
-    # Process with pose detector
-    results = pose_detector.process(rgb_image)
-    
-    # Extract keypoints
-    keypoints = []
-    if results.pose_landmarks:
-        for landmark in results.pose_landmarks.landmark:
-            # Convert to coordinates relative to cropped image
-            x_in_crop = landmark.x
-            y_in_crop = landmark.y
-            
-            # Convert back to coordinates in original image
-            x_in_orig = (x_in_crop * (x2_padded - x1_padded) + x1_padded) / frame_width
-            y_in_orig = (y_in_crop * (y2_padded - y1_padded) + y1_padded) / frame_height
-            
-            # Ensure values are in [0, 1]
-            x_in_orig = max(0, min(1, x_in_orig))
-            y_in_orig = max(0, min(1, y_in_orig))
-            
-            keypoints.append((x_in_orig, y_in_orig))
-    else:
-        return None
-    
-    return keypoints
-
-def calculate_inter_person_distances(detections, keypoints_list):
-    """
-    Calculate distances between detected persons
-    
-    Args:
-        detections: List of person bounding boxes
-        keypoints_list: List of keypoint lists for each person
+        Returns:
+            List of tracked detections with track IDs
+        """
+        tracked_detections = []
         
-    Returns:
-        List of distance features [centroid_dist, hip_dist, shoulder_dist]
-    """
-    if len(detections) < 2 or len(keypoints_list) < 2:
-        return []
-    
-    distance_features = []
-    
-    # Hip keypoints indices in MediaPipe
-    left_hip_idx, right_hip_idx = 23, 24
-    # Shoulder keypoints indices
-    left_shoulder_idx, right_shoulder_idx = 11, 12
-    
-    for i in range(len(detections)):
-        for j in range(i+1, len(detections)):
-            if keypoints_list[i] is None or keypoints_list[j] is None:
-                continue
-                
-            # Calculate centroid distances from bounding boxes
-            x1_i, y1_i, x2_i, y2_i, _ = detections[i]
-            x1_j, y1_j, x2_j, y2_j, _ = detections[j]
+        for det in detections:
+            best_iou = 0
+            best_track = None
             
-            centroid_i = ((x1_i + x2_i) / 2, (y1_i + y2_i) / 2)
-            centroid_j = ((x1_j + x2_j) / 2, (y1_j + y2_j) / 2)
+            # Try to match with existing tracks
+            for track in self.tracks:
+                iou = self.compute_iou(det[:4], track['bbox'])
+                if iou > best_iou and iou >= self.iou_threshold:
+                    best_iou = iou
+                    best_track = track
             
-            centroid_dist = np.sqrt((centroid_i[0] - centroid_j[0])**2 + (centroid_i[1] - centroid_j[1])**2)
-            
-            # Calculate hip distances if keypoints exist
-            hip_i = ((keypoints_list[i][left_hip_idx][0] + keypoints_list[i][right_hip_idx][0]) / 2,
-                     (keypoints_list[i][left_hip_idx][1] + keypoints_list[i][right_hip_idx][1]) / 2)
-            
-            hip_j = ((keypoints_list[j][left_hip_idx][0] + keypoints_list[j][right_hip_idx][0]) / 2,
-                     (keypoints_list[j][left_hip_idx][1] + keypoints_list[j][right_hip_idx][1]) / 2)
-            
-            hip_dist = np.sqrt((hip_i[0] - hip_j[0])**2 + (hip_i[1] - hip_j[1])**2)
-            
-            # Calculate shoulder distances
-            shoulder_i = ((keypoints_list[i][left_shoulder_idx][0] + keypoints_list[i][right_shoulder_idx][0]) / 2,
-                          (keypoints_list[i][left_shoulder_idx][1] + keypoints_list[i][right_shoulder_idx][1]) / 2)
-            
-            shoulder_j = ((keypoints_list[j][left_shoulder_idx][0] + keypoints_list[j][right_shoulder_idx][0]) / 2,
-                          (keypoints_list[j][left_shoulder_idx][1] + keypoints_list[j][right_shoulder_idx][1]) / 2)
-            
-            shoulder_dist = np.sqrt((shoulder_i[0] - shoulder_j[0])**2 + (shoulder_i[1] - shoulder_j[1])**2)
-            
-            # Add to features
-            distance_features.append({
-                'person_i': i,
-                'person_j': j,
-                'centroid_dist': centroid_dist,
-                'hip_dist': hip_dist,
-                'shoulder_dist': shoulder_dist
-            })
-    
-    return distance_features
-
-def process_video_multi_person(video_path, output_dir, target_fps=15, include_distances=True, max_persons=10):
-    """
-    Process a video for multi-person pose extraction
-    
-    Args:
-        video_path: Path to video file
-        output_dir: Directory to save CSV files
-        target_fps: Target frame rate for processing
-        include_distances: Whether to include inter-person distances
-        max_persons: Maximum number of persons to track
-        
-    Returns:
-        List of paths to generated CSV files
-    """
-    # Extract video name without extension
-    video_name = os.path.splitext(os.path.basename(video_path))[0]
-    
-    # Determine appropriate output subdirectory based on filename prefix
-    if video_name.startswith('V_'):
-        output_subdir = os.path.join(output_dir, 'Violence')
-    elif video_name.startswith('NV_'):
-        output_subdir = os.path.join(output_dir, 'NonViolence')
-    else:
-        output_subdir = output_dir
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_subdir, exist_ok=True)
-    
-    # Load models
-    yolo_model = load_yolo()
-    pose_detector = setup_pose_detector()
-    
-    # Open video
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error opening video: {video_path}")
-        return []
-    
-    # Get video properties
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    orig_fps = cap.get(cv2.CAP_PROP_FPS)
-    if not orig_fps or orig_fps <= 0:
-        orig_fps = 30  # Default
-    
-    # Calculate frame interval to achieve target FPS
-    frame_interval = max(1, int(round(orig_fps / target_fps)))
-    
-    # Setup CSV files
-    csv_files = []
-    csv_writers = []
-    
-    # Create individual CSVs for each potential person
-    for i in range(max_persons):
-        csv_path = os.path.join(output_subdir, f"{video_name}_person{i}.csv")
-        csv_files.append(csv_path)
-        
-        with open(csv_path, 'w', newline='') as f:
-            # MediaPipe pose model outputs 33 landmarks, each with x,y
-            fieldnames = ['frame_idx'] + [f"{j}_{coord}" for j in range(33) for coord in ['x', 'y']]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            csv_writers.append((f, writer))
-    
-    # Create a CSV for inter-person distances if needed
-    distances_csv = None
-    distances_writer = None
-    
-    if include_distances:
-        distances_path = os.path.join(output_subdir, f"{video_name}_distances.csv")
-        csv_files.append(distances_path)
-        
-        distances_csv = open(distances_path, 'w', newline='')
-        fieldnames = ['frame_idx', 'person_i', 'person_j', 'centroid_dist', 'hip_dist', 'shoulder_dist']
-        distances_writer = csv.DictWriter(distances_csv, fieldnames=fieldnames)
-        distances_writer.writeheader()
-    
-    # Process frames
-    frame_idx = 0
-    processed_idx = 0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    with tqdm(total=total_frames, desc=f"Processing {video_name}") as pbar:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Process only frames at the specified interval
-            if frame_idx % frame_interval == 0:
-                # Detect persons with YOLO
-                detections = detect_persons_yolo(frame, yolo_model)
-                
-                # Limit to max_persons
-                detections = detections[:max_persons]
-                
-                # Extract pose for each person
-                keypoints_list = []
-                for det_idx, detection in enumerate(detections):
-                    keypoints = extract_pose_from_detection(frame, detection, pose_detector, frame_width, frame_height)
-                    keypoints_list.append(keypoints)
-                    
-                    # Write to person's CSV if valid pose
-                    if keypoints is not None:
-                        row = {'frame_idx': processed_idx}
-                        for j, (x, y) in enumerate(keypoints):
-                            row[f"{j}_x"] = x
-                            row[f"{j}_y"] = y
-                        
-                        # Get file and writer
-                        _, writer = csv_writers[det_idx]
-                        writer.writerow(row)
-                    
-                # Calculate and write inter-person distances if needed
-                if include_distances and distances_writer and len(detections) >= 2:
-                    distance_features = calculate_inter_person_distances(detections, keypoints_list)
-                    
-                    for dist in distance_features:
-                        dist['frame_idx'] = processed_idx
-                        distances_writer.writerow(dist)
-                
-                processed_idx += 1
-            
-            frame_idx += 1
-            pbar.update(1)
-    
-    # Close video and CSV files
-    cap.release()
-    
-    for f, _ in csv_writers:
-        f.close()
-    
-    if distances_csv:
-        distances_csv.close()
-    
-    print(f"Saved multi-person pose data for {video_name} - {processed_idx} frames processed")
-    
-    # Clean up empty files (no detections for that person ID)
-    valid_files = []
-    for csv_path in csv_files:
-        # Check if file has more than just the header
-        with open(csv_path, 'r') as f:
-            lines = f.readlines()
-            if len(lines) <= 1:  # Only header
-                os.remove(csv_path)
-                print(f"Removed empty file: {csv_path}")
+            if best_track is not None:
+                # Match found: assign existing track id and update track
+                det_dict = {
+                    'bbox': det[:4], 
+                    'conf': det[4], 
+                    'track_id': best_track['id']
+                }
+                tracked_detections.append(det_dict)
+                best_track['bbox'] = det[:4]
+                best_track['last_seen'] = frame_idx
             else:
-                valid_files.append(csv_path)
-    
-    return valid_files
-
-def batch_process_videos(video_dir, output_dir, target_fps=15, include_distances=True, max_persons=10):
-    """
-    Process all videos in a directory for multi-person pose extraction
-    
-    Args:
-        video_dir: Directory containing videos
-        output_dir: Directory to save pose data
-        target_fps: Target FPS for extraction
-        include_distances: Whether to include inter-person distances
-        max_persons: Maximum number of persons to track per video
+                # No matching track: create a new track
+                det_dict = {
+                    'bbox': det[:4], 
+                    'conf': det[4], 
+                    'track_id': self.next_track_id
+                }
+                tracked_detections.append(det_dict)
+                self.tracks.append({
+                    'id': self.next_track_id, 
+                    'bbox': det[:4], 
+                    'last_seen': frame_idx
+                })
+                self.next_track_id += 1
         
-    Returns:
-        List of all generated CSV files
-    """
-    # Find all video files
-    video_paths = []
-    for ext in ['.mp4', '.avi', '.mov', '.mkv']:
-        video_paths.extend(glob.glob(os.path.join(video_dir, '**', f'*{ext}'), recursive=True))
-    
-    print(f"Found {len(video_paths)} videos to process")
-    
-    all_csv_files = []
-    
-    for video_path in video_paths:
-        try:
-            csv_files = process_video_multi_person(
-                video_path, output_dir, target_fps, include_distances, max_persons
-            )
-            all_csv_files.extend(csv_files)
-            print(f"Generated {len(csv_files)} files for {os.path.basename(video_path)}")
-        except Exception as e:
-            print(f"Error processing {video_path}: {str(e)}")
-    
-    print(f"Generated a total of {len(all_csv_files)} CSV files")
-    return all_csv_files
+        # Remove tracks that haven't been updated in the last 10 frames
+        self.tracks = [t for t in self.tracks if frame_idx - t['last_seen'] <= 10]
+        
+        return tracked_detections
+
+    def detect_persons_yolo(self, image):
+        """
+        Detect persons in an image using YOLO.
+        
+        Args:
+            image: BGR image
+        
+        Returns:
+            List of bounding boxes [x1, y1, x2, y2, confidence]
+        """
+        # YOLO expects RGB
+        img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = self.yolo_model(img_rgb)
+        predictions = results[0].boxes.xyxy.cpu().numpy()
+        
+        persons = []
+        for pred in predictions:
+            # Check the number of elements in each prediction
+            if pred.size == 6:
+                x1, y1, x2, y2, conf, cls = pred
+            elif pred.size == 4:
+                x1, y1, x2, y2 = pred
+                conf = 1.0  # default confidence
+                cls = 0     # assume person
+            else:
+                continue
+            
+            if int(cls) == 0:  # Only persons
+                persons.append([x1, y1, x2, y2, conf])
+        return persons
+
+    def estimate_pose(self, image, tracked_detections):
+        """
+        Estimate pose for each tracked person.
+        
+        Args:
+            image: Input image
+            tracked_detections: List of tracked person detections
+        
+        Returns:
+            List of pose landmarks for each tracked person
+        """
+        # Convert image to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Store pose results
+        pose_results = []
+        
+        for detection in tracked_detections:
+            # Crop the bounding box
+            x1, y1, x2, y2 = map(int, detection['bbox'])
+            person_crop = image_rgb[y1:y2, x1:x2]
+            
+            # Process the cropped image
+            results = self.pose.process(person_crop)
+            
+            if results.pose_landmarks:
+                # Convert landmarks to image coordinates
+                landmarks = []
+                for landmark in results.pose_landmarks.landmark:
+                    # Scale landmarks back to original image coordinates
+                    lm_x = int(landmark.x * person_crop.shape[1] + x1)
+                    lm_y = int(landmark.y * person_crop.shape[0] + y1)
+                    landmarks.append({
+                        'x': lm_x,
+                        'y': lm_y,
+                        'visibility': landmark.visibility
+                    })
+                
+                pose_results.append({
+                    'track_id': detection['track_id'],
+                    'landmarks': landmarks
+                })
+        
+        return pose_results
+
+    def analyze_pose_for_violence(self, pose_results):
+        """
+        Analyze pose landmarks to detect potential violent actions.
+        
+        Args:
+            pose_results: List of pose results for tracked persons
+        
+        Returns:
+            List of potential violence indicators
+        """
+        violence_indicators = []
+        
+        for person_pose in pose_results:
+            landmarks = person_pose['landmarks']
+            
+            # Example violence detection heuristics 
+            # These are simplistic and should be refined with domain expertise
+            
+            # Check for aggressive arm positioning
+            if landmarks:
+                left_wrist = landmarks[self.mp_pose.PoseLandmarks.LEFT_WRIST]
+                right_wrist = landmarks[self.mp_pose.PoseLandmarks.RIGHT_WRIST]
+                left_elbow = landmarks[self.mp_pose.PoseLandmarks.LEFT_ELBOW]
+                right_elbow = landmarks[self.mp_pose.PoseLandmarks.RIGHT_ELBOW]
+                
+                # Example: High arm elevation might indicate aggressive posture
+                if (left_wrist['y'] < left_elbow['y'] or 
+                    right_wrist['y'] < right_elbow['y']):
+                    violence_indicators.append({
+                        'track_id': person_pose['track_id'],
+                        'type': 'high_arm_position',
+                        'confidence': 0.6
+                    })
+        
+        return violence_indicators
+
+    def process_video(self, video_path, output_dir):
+        """
+        Process a single video for multi-person tracking and pose estimation.
+        
+        Args:
+            video_path: Path to the video file
+            output_dir: Directory to save output files
+        
+        Returns:
+            Path to the generated CSV file
+        """
+        # Extract video name
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        
+        # Determine output subdirectory
+        if video_name.startswith('V_'):
+            output_subdir = os.path.join(output_dir, 'Violence')
+        elif video_name.startswith('NV_'):
+            output_subdir = os.path.join(output_dir, 'NonViolence')
+        else:
+            output_subdir = output_dir
+        os.makedirs(output_subdir, exist_ok=True)
+        
+        # Visualization directory
+        if self.visualization_dir:
+            vis_dir = os.path.join(self.visualization_dir, video_name)
+            os.makedirs(vis_dir, exist_ok=True)
+        
+        # Open video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"Error opening video: {video_path}")
+            return []
+        
+        # Get video properties
+        orig_fps = cap.get(cv2.CAP_PROP_FPS)
+        if not orig_fps or orig_fps <= 0:
+            orig_fps = 30  # Default FPS
+        frame_interval = max(1, int(round(orig_fps / self.target_fps)))
+        
+        # Create CSV file for tracking data
+        csv_path = os.path.join(output_subdir, f"{video_name}_tracked.csv")
+        csv_file = open(csv_path, 'w', newline='')
+        fieldnames = [
+            'frame_idx', 'track_id', 'x1', 'y1', 'x2', 'y2', 'conf', 
+            'violence_indicator', 'violence_confidence'
+        ]
+        csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        csv_writer.writeheader()
+        
+        # Reset tracking for this video
+        self.tracks = []
+        self.next_track_id = 0
+        
+        frame_idx = 0
+        processed_idx = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        with tqdm(total=total_frames, desc=f"Processing {video_name}") as pbar:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                if frame_idx % frame_interval == 0:
+                    # Detect persons
+                    detections = self.detect_persons_yolo(frame)
+                    
+                    # Track detections
+                    tracked_detections = self.track_detections(detections, frame_idx)
+                    
+                    # Estimate poses
+                    pose_results = self.estimate_pose(frame, tracked_detections)
+                    
+                    # Analyze poses for violence indicators
+                    violence_indicators = self.analyze_pose_for_violence(pose_results)
+                    
+                    # Prepare visualization if enabled
+                    if self.visualization_dir:
+                        vis_frame = frame.copy()
+                        for detection in tracked_detections:
+                            # Draw bounding box
+                            x1, y1, x2, y2 = map(int, detection['bbox'])
+                            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(vis_frame, f"ID: {detection['track_id']}", 
+                                        (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 
+                                        (0, 255, 0), 2)
+                        
+                        # Save visualization frame
+                        vis_path = os.path.join(vis_dir, f"frame_{processed_idx:04d}.jpg")
+                        cv2.imwrite(vis_path, vis_frame)
+                    
+                    # Write tracking and violence data to CSV
+                    for detection in tracked_detections:
+                        # Check if this detection has a violence indicator
+                        violence_info = next(
+                            (ind for ind in violence_indicators 
+                             if ind['track_id'] == detection['track_id']), 
+                            None
+                        )
+                        
+                        row = {
+                            'frame_idx': processed_idx,
+                            'track_id': detection['track_id'],
+                            'x1': detection['bbox'][0],
+                            'y1': detection['bbox'][1],
+                            'x2': detection['bbox'][2],
+                            'y2': detection['bbox'][3],
+                            'conf': detection['conf'],
+                            'violence_indicator': violence_info['type'] if violence_info else None,
+                            'violence_confidence': violence_info['confidence'] if violence_info else None
+                        }
+                        csv_writer.writerow(row)
+                    
+                    processed_idx += 1
+                
+                frame_idx += 1
+                pbar.update(1)
+        
+        cap.release()
+        csv_file.close()
+        
+        print(f"Saved tracked detections for {video_name} - {processed_idx} frames processed")
+        return [csv_path]
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract multi-person pose keypoints from videos')
-    parser.add_argument('--video_dir', type=str, default='C:\Github\DS_VIO\Data\VioNonVio', 
+    parser = argparse.ArgumentParser(description='Advanced Person Tracking for Violence Detection')
+    parser.add_argument('--video_dir', type=str, default='./videos',
                         help='Directory containing videos')
-    parser.add_argument('--output_dir', type=str, default='./Data/Pose',
-                        help='Directory to save pose keypoints')
+    parser.add_argument('--output_dir', type=str, default='./output',
+                        help='Directory to save tracking data')
+    parser.add_argument('--visualization_dir', type=str, default='./visualizations',
+                        help='Directory to save visualization frames')
     parser.add_argument('--fps', type=int, default=15,
-                        help='Target FPS for extraction')
+                        help='Target FPS for processing')
     parser.add_argument('--max_persons', type=int, default=10,
                         help='Maximum number of persons to track per video')
-    parser.add_argument('--no_distances', action='store_true',
-                        help='Disable inter-person distance calculation')
     parser.add_argument('--single_video', type=str, default=None,
                         help='Process a single video instead of batch processing')
-    
     args = parser.parse_args()
     
+    # Ensure output directories exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.visualization_dir, exist_ok=True)
+    
+    # Initialize tracker
+    tracker = PersonTracker(
+        target_fps=args.fps, 
+        max_persons=args.max_persons, 
+        visualization_dir=args.visualization_dir
+    )
+    
+    # Process single video or batch of videos
     if args.single_video:
-        # Process a single video
         if not os.path.exists(args.single_video):
             print(f"Error: Video file {args.single_video} not found")
             return
         
-        csv_files = process_video_multi_person(
-            args.single_video, args.output_dir, args.fps, 
-            not args.no_distances, args.max_persons
-        )
-        print(f"Generated {len(csv_files)} CSV files")
+        csv_files = tracker.process_video(args.single_video, args.output_dir)
+        print(f"Generated {len(csv_files)} CSV file(s)")
     else:
-        # Batch process all videos
         if not os.path.exists(args.video_dir):
             print(f"Error: Video directory {args.video_dir} not found")
             return
         
-        batch_process_videos(
-            args.video_dir, args.output_dir, args.fps,
-            not args.no_distances, args.max_persons
-        )
+        # Find all video files
+        video_paths = []
+        for ext in ['.mp4', '.avi', '.mov', '.mkv']:
+            video_paths.extend(
+                glob.glob(os.path.join(args.video_dir, '**', f'*{ext}'), recursive=True)
+            )
+        
+        print(f"Found {len(video_paths)} videos to process")
+        all_csv_files = []
+        
+        # Process each video
+        for video_path in video_paths:
+            try:
+                csv_files = tracker.process_video(video_path, args.output_dir)
+                all_csv_files.extend(csv_files)
+                print(f"Generated {len(csv_files)} file(s) for {os.path.basename(video_path)}")
+            except Exception as e:
+                print(f"Error processing {video_path}: {str(e)}")
+        
+        print(f"Generated a total of {len(all_csv_files)} CSV file(s)")
 
 if __name__ == "__main__":
     main()
