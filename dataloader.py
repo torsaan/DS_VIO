@@ -7,7 +7,7 @@ import cv2
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
-from utils.video_augmentation import VideoAugmenter
+from utils.augmentoor import VideoAugmenter
 import random
 
 class EnhancedViolenceDataset(Dataset):
