@@ -45,23 +45,27 @@ def get_video_properties(video_path):
     }
 
 def standardize_video(video_path, output_path, target_width=224, target_height=224, 
-                     target_fps=15, max_duration=6, min_duration=2, verbose=False):
+                     num_frames=16, fps=15, verbose=False):
     """
-    Standardize a video by converting it to a consistent resolution, fps, and duration.
+    Standardize a video by extracting a fixed number of frames and saving as a new video.
     
     Args:
         video_path: Path to the input video file
         output_path: Path to save the standardized video
         target_width: Target width resolution
         target_height: Target height resolution
-        target_fps: Target frames per second
-        max_duration: Maximum duration in seconds (videos longer than this will be truncated)
-        min_duration: Minimum duration in seconds (shorter videos will be looped)
+        num_frames: Fixed number of frames to extract
+        fps: Output video frame rate
         verbose: Whether to print detailed information
         
     Returns:
         Dictionary with processing statistics or None if processing failed
     """
+    import os
+    import cv2
+    import numpy as np
+    from . import get_video_properties
+    
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -74,67 +78,31 @@ def standardize_video(video_path, output_path, target_width=224, target_height=2
         print(f"Processing {video_path}:")
         print(f"  Original: {props['width']}x{props['height']}, {props['fps']} FPS, {props['duration']:.2f}s")
     
-    # Open video
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video {video_path}")
+    # Extract frames with fixed count
+    frames = extract_fixed_frames(
+        video_path, 
+        num_frames=num_frames, 
+        resize_dim=(target_width, target_height)
+    )
+    
+    if frames is None or len(frames) == 0:
+        print(f"Error: Failed to extract frames from {video_path}")
         return None
-    
-    # Calculate frame interval to achieve target FPS
-    orig_fps = props['fps']
-    if orig_fps <= 0:
-        orig_fps = 30  # Fallback if FPS information is missing
-    
-    # Calculate frame sampling interval
-    interval = max(1, round(orig_fps / target_fps))
-    
-    # Calculate target frame count based on duration constraints
-    target_frame_count = int(target_fps * max_duration)
-    min_frame_count = int(target_fps * min_duration)
     
     # Setup video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, target_fps, (target_width, target_height))
-    
-    # Process frames
-    frames = []
-    frame_idx = 0
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        # Sample frames at the calculated interval
-        if frame_idx % interval == 0:
-            # Resize frame to target resolution
-            resized_frame = cv2.resize(frame, (target_width, target_height))
-            frames.append(resized_frame)
-            
-            # Stop if we've reached the maximum number of frames
-            if len(frames) >= target_frame_count:
-                break
-        
-        frame_idx += 1
-    
-    # Handle video duration constraints
-    if len(frames) < min_frame_count:
-        # Loop the video to meet minimum duration
-        while len(frames) < min_frame_count:
-            # Add frames from the beginning again
-            frames.extend(frames[:min_frame_count - len(frames)])
+    out = cv2.VideoWriter(output_path, fourcc, fps, (target_width, target_height))
     
     # Write frames to output video
     for frame in frames:
         out.write(frame)
     
     # Release resources
-    cap.release()
     out.release()
     
     # Calculate stats
     actual_frame_count = len(frames)
-    actual_duration = actual_frame_count / target_fps
+    actual_duration = actual_frame_count / fps
     
     stats = {
         "original_width": props["width"],
@@ -143,22 +111,27 @@ def standardize_video(video_path, output_path, target_width=224, target_height=2
         "original_duration": props["duration"],
         "standardized_width": target_width,
         "standardized_height": target_height,
-        "standardized_fps": target_fps,
+        "standardized_fps": fps,
         "standardized_duration": actual_duration,
         "original_frame_count": props["frame_count"],
         "standardized_frame_count": actual_frame_count,
         "was_extended": actual_frame_count > props["frame_count"],
-        "was_truncated": actual_frame_count < props["frame_count"] and props["duration"] > max_duration
+        "was_truncated": actual_frame_count < props["frame_count"]
     }
     
     if verbose:
-        print(f"  Standardized: {target_width}x{target_height}, {target_fps} FPS, {actual_duration:.2f}s")
+        print(f"  Standardized: {target_width}x{target_height}, {fps} FPS, {actual_duration:.2f}s")
         if stats["was_extended"]:
-            print("  Note: Video was extended to meet minimum duration")
+            print("  Note: Video was extended to meet frame count")
         if stats["was_truncated"]:
-            print("  Note: Video was truncated to meet maximum duration")
+            print("  Note: Video was truncated to meet frame count")
     
     return stats
+
+
+
+
+
 
 def process_dataset(input_dir, output_dir, target_width=224, target_height=224, 
                    target_fps=15, max_duration=6, min_duration=2, 
@@ -343,6 +316,74 @@ def verify_dataset(data_dir):
         print(f"  Average duration: {avg_duration:.2f}s")
     
     return len(issues) == 0
+
+
+def extract_fixed_frames(video_path, num_frames=16, resize_dim=(224, 224)):
+    """
+    Extract a fixed number of frames evenly distributed throughout the video
+    """
+    import cv2
+    import numpy as np
+    
+    # Open video file
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error: Could not open video {video_path}")
+        return None
+    
+    # Get total frames
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Calculate frame indices to sample (evenly distributed)
+    if total_frames <= num_frames:
+        # If video has fewer frames than required, we'll duplicate some frames
+        indices = np.linspace(0, total_frames-1, num_frames, dtype=int)
+    else:
+        # Sample frames evenly
+        indices = np.linspace(0, total_frames-1, num_frames, dtype=int)
+    
+    frames = []
+    for idx in indices:
+        # Set frame position
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        
+        if ret:
+            # Resize frame
+            if resize_dim:
+                frame = cv2.resize(frame, resize_dim)
+            frames.append(frame)
+        else:
+            # If seeking fails, use last valid frame or a black frame
+            if frames:
+                frames.append(frames[-1].copy())
+            else:
+                # Create a blank frame if no valid frames yet
+                blank_frame = np.zeros((resize_dim[1], resize_dim[0], 3), dtype=np.uint8)
+                frames.append(blank_frame)
+    
+    cap.release()
+    
+    return frames
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='Standardize video dataset for violence detection')

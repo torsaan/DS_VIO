@@ -65,43 +65,23 @@ class EnhancedViolenceDataset(Dataset):
     
     def read_video(self, video_path):
         """
-        Read video frames at the target FPS rate.
+        Read a fixed number of frames from a video, evenly distributed throughout.
         """
-        cap = cv2.VideoCapture(video_path)
-        orig_fps = cap.get(cv2.CAP_PROP_FPS)
-        if not orig_fps or orig_fps <= 0:
-            orig_fps = 30  # fallback if FPS is not available
+        from utils.video_standardizer import extract_fixed_frames
+        from utils.dataprep import NUM_FRAMES
         
-        # Calculate the interval to sample frames to achieve target_fps
-        sample_interval = max(1, int(round(orig_fps / self.target_fps)))
-        frames = []
-        frame_idx = 0
+        # Extract frames with fixed count
+        frames = extract_fixed_frames(
+            video_path, 
+            num_frames=self.num_frames, 
+            resize_dim=(self.frame_width, self.frame_height)
+        )
         
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Only add frames that are at the sampling interval
-            if frame_idx % sample_interval == 0:
-                # Convert frame from BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-            
-            frame_idx += 1
-        
-        cap.release()
-        
-        # Ensure we have exactly self.num_frames frames
-        if len(frames) >= self.num_frames:
-            # Use uniform sampling to get exactly num_frames
-            indices = np.linspace(0, len(frames)-1, self.num_frames, dtype=int)
-            frames = [frames[i] for i in indices]
-        else:
-            # Pad with the last frame if video is too short
-            last_frame = frames[-1] if frames else np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
-            while len(frames) < self.num_frames:
-                frames.append(last_frame.copy())
+        if frames is None or len(frames) == 0:
+            print(f"Error: Failed to extract frames from {video_path}")
+            # Create empty frames as fallback
+            frames = [np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8) 
+                    for _ in range(self.num_frames)]
         
         return frames
     
@@ -291,63 +271,38 @@ def get_transforms(frame_height=224, frame_width=224):
     return train_transform, val_transform
 
 def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
-                   test_video_paths, test_labels, pose_dir, batch_size=8,
-                   num_workers=4, target_fps=15, num_frames=32, model_type='3d_cnn'):
-    """
-    Create DataLoaders for training, validation, and testing.
+                   test_video_paths, test_labels, pose_dir=None, batch_size=8,
+                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn'):
+    """Create DataLoaders for training, validation, and testing."""
     
-    Args:
-        train_video_paths, val_video_paths, test_video_paths: Lists of video paths
-        train_labels, val_labels, test_labels: Lists of labels
-        pose_dir: Directory containing pose keypoint CSVs
-        batch_size: Batch size for DataLoader
-        num_workers: Number of worker processes for DataLoader
-        target_fps: Target frame rate for video sampling
-        num_frames: Number of frames to sample per video
-        model_type: Type of model architecture
-        
-    Returns:
-        train_loader, val_loader, test_loader: DataLoader objects
-    """
     # Get transforms
     train_transform, val_transform = get_transforms()
     
-    # Create datasets
+    # Create datasets with fixed frame count
     train_dataset = EnhancedViolenceDataset(
-        train_video_paths, train_labels, pose_dir=pose_dir,
+        train_video_paths, train_labels, pose_dir=None,  # Set pose_dir to None
         transform=train_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=True, model_type=model_type,
         training=True
     )
     
     val_dataset = EnhancedViolenceDataset(
-        val_video_paths, val_labels, pose_dir=pose_dir,
+        val_video_paths, val_labels, pose_dir=None,  # Set pose_dir to None
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
         training=False
     )
     
     test_dataset = EnhancedViolenceDataset(
-        test_video_paths, test_labels, pose_dir=pose_dir,
+        test_video_paths, test_labels, pose_dir=None,  # Set pose_dir to None
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
         training=False
     )
     
-    # Create DataLoaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
-    )
+    # Create loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     
     return train_loader, val_loader, test_loader

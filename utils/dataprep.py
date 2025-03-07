@@ -1,20 +1,20 @@
-# utils/data_preparation.py
+# Add these imports if they're not already present
 import os
 import glob
 from sklearn.model_selection import train_test_split
+import json
 
-def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, random_state=42):
+# Add these constants at the top of the file
+RANDOM_SEED = 42  # Fixed seed for reproducible splits
+TEST_SIZE = 0.2   # 20% for test set
+VAL_SIZE = 0.15   # 15% of remaining for validation
+NUM_FRAMES = 16   # Fixed number of frames per video
+
+
+def prepare_violence_nonviolence_data(data_root, test_size=TEST_SIZE, val_size=VAL_SIZE, random_state=RANDOM_SEED):
     """
     Prepare data paths and labels from the VioNonVio directory structure.
-    
-    Args:
-        data_root: Root directory containing the data folders
-        test_size: Fraction of data to use for testing
-        val_size: Fraction of training data to use for validation
-        random_state: Random seed for reproducibility
-        
-    Returns:
-        train_paths, train_labels, val_paths, val_labels, test_paths, test_labels
+    Ensures consistent splits using a fixed random seed.
     """
     # Define paths to the VioNonVio folders
     violence_dir = os.path.join(data_root, "Violence")
@@ -40,6 +40,7 @@ def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, r
     print(f"Total videos: {len(video_paths)}")
     
     # Split into train+val and test sets
+    # Using a fixed random_state ensures the same split every time
     train_val_paths, test_paths, train_val_labels, test_labels = train_test_split(
         video_paths, labels, test_size=test_size, random_state=random_state, stratify=labels
     )
@@ -48,7 +49,7 @@ def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, r
     train_paths, val_paths, train_labels, val_labels = train_test_split(
         train_val_paths, train_val_labels, 
         test_size=val_size/(1-test_size),  # Adjust validation size relative to train+val
-        random_state=random_state, 
+        random_state=random_state,  # Same random_state for consistency
         stratify=train_val_labels
     )
     
@@ -59,44 +60,64 @@ def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, r
     
     return train_paths, train_labels, val_paths, val_labels, test_paths, test_labels
 
-def check_pose_data_availability(video_paths, pose_dir):
+
+def save_data_splits(data_root, output_path="./data_splits.json"):
     """
-    Check which videos have corresponding pose keypoint data.
-    
-    Args:
-        video_paths: List of video file paths
-        pose_dir: Directory containing pose keypoint CSVs
-        
-    Returns:
-        available_count: Number of videos with pose data
-        total_count: Total number of videos
+    Save consistent train/val/test splits to a JSON file.
+    This allows both team members to use exactly the same data splits.
     """
-    available_count = 0
-    missing_videos = []
+    # Get data splits
+    train_paths, train_labels, val_paths, val_labels, test_paths, test_labels = \
+        prepare_violence_nonviolence_data(data_root)
     
-    for video_path in video_paths:
-        video_name = os.path.splitext(os.path.basename(video_path))[0]
-        
-        # Check potential CSV locations
-        potential_paths = [
-            os.path.join(pose_dir, f"{video_name}.csv"),
-            os.path.join(pose_dir, "Violence", f"{video_name}.csv") if video_name.startswith("V_") else None,
-            os.path.join(pose_dir, "NonViolence", f"{video_name}.csv") if video_name.startswith("NV_") else None,
-        ]
-        
-        if any(p and os.path.exists(p) for p in potential_paths if p):
-            available_count += 1
-        else:
-            missing_videos.append(video_name)
+    # Create dictionary with splits
+    data_splits = {
+        "train": {
+            "paths": train_paths,
+            "labels": [int(label) for label in train_labels]
+        },
+        "val": {
+            "paths": val_paths,
+            "labels": [int(label) for label in val_labels]
+        },
+        "test": {
+            "paths": test_paths,
+            "labels": [int(label) for label in test_labels]
+        },
+        "metadata": {
+            "random_seed": RANDOM_SEED,
+            "test_size": TEST_SIZE,
+            "val_size": VAL_SIZE,
+            "num_frames": NUM_FRAMES
+        }
+    }
     
-    total_count = len(video_paths)
-    print(f"Found pose data for {available_count}/{total_count} videos ({available_count/total_count*100:.1f}%)")
+    # Save to file
+    with open(output_path, 'w') as f:
+        json.dump(data_splits, f, indent=2)
     
-    if len(missing_videos) > 0:
-        print(f"Missing pose data for {len(missing_videos)} videos")
-        if len(missing_videos) <= 10:
-            print("Missing for: ", ", ".join(missing_videos))
-        else:
-            print("First 10 missing: ", ", ".join(missing_videos[:10]))
+    print(f"Data splits saved to {output_path}")
+    return output_path
+
+def load_data_splits(splits_path="./data_splits.json"):
+    """
+    Load data splits from a JSON file.
+    """
+    # Load from file
+    with open(splits_path, 'r') as f:
+        data_splits = json.load(f)
     
-    return available_count, total_count
+    # Extract splits
+    train_paths = data_splits["train"]["paths"]
+    train_labels = data_splits["train"]["labels"]
+    val_paths = data_splits["val"]["paths"]
+    val_labels = data_splits["val"]["labels"]
+    test_paths = data_splits["test"]["paths"]
+    test_labels = data_splits["test"]["labels"]
+    
+    # Print split summary
+    print(f"Training set: {len(train_paths)} videos")
+    print(f"Validation set: {len(val_paths)} videos")
+    print(f"Test set: {len(test_paths)} videos")
+    
+    return train_paths, train_labels, val_paths, val_labels, test_paths, test_labels

@@ -5,4 +5,3 @@ from .model_transformer import VideoTransformer
 from .model_i3d import TransferLearningI3D
 from .model_hybrid import ModelHybrid
 from .dl_models import ViolenceLSTM
-from .ml_models import MLModels
