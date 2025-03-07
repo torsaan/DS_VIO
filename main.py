@@ -53,7 +53,7 @@ def setup_device(gpu_id):
 def initialize_model(model_type, device, use_pose=False):
     """Initialize model based on model type"""
     if model_type == '3d_cnn':
-        model = Model3DCNN(use_pose=use_pose).to(device)
+        model = Model3DCNN().to(device)
     elif model_type == '2d_cnn_lstm':
         model = Model2DCNNLSTM(use_pose=use_pose).to(device)
     elif model_type == 'transformer':
