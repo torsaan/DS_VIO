@@ -15,13 +15,10 @@ from Models.model_transformer import VideoTransformer
 from Models.model_i3d import TransferLearningI3D
 
 
-
-
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Violence Detection Training")
-    parser.add_argument("--data_dir", type=str, default="./Data/VioNonVio", 
+    parser.add_argument("--data_dir", type=str, default="./Data/standardized", 
                         help="Directory containing the violence detection dataset")
     parser.add_argument("--pose_dir", type=str, default="./Data/pose_keypoints", 
                         help="Directory containing pose keypoints")
@@ -42,6 +39,9 @@ def parse_args():
 
 def setup_device(gpu_id):
     """Set up computation device (CPU or GPU)"""
+    if gpu_id >= 1 and torch.cuda.is_available():
+        device = torch.device(f"cuda:{gpu_id}")
+        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
     if gpu_id >= 0 and torch.cuda.is_available():
         device = torch.device(f"cuda:{gpu_id}")
         print(f"Using GPU: {torch.cuda.get_device_name(device)}")
@@ -98,7 +98,7 @@ def main():
             test_paths, test_labels,
             current_pose_dir,
             batch_size=args.batch_size,
-            num_workers=4,
+            num_workers=3,
             model_type=model_type
         )
         

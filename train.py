@@ -40,7 +40,10 @@ def train_epoch(model, data_loader, optimizer, criterion, device):
         # Backward pass and optimize
         loss.backward()
         optimizer.step()
-        
+
+        # Clear GPU memory after each step
+        torch.cuda.empty_cache()
+
         # Update statistics
         running_loss += loss.item() * targets.size(0)
         _, predicted = outputs.max(1)
@@ -121,6 +124,9 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=30,
     Returns:
         Trained model
     """
+    #New code for GPU
+    model = model.to(device)
+
     # Create model directory
     model_dir = os.path.join(output_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
