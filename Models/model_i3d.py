@@ -63,6 +63,11 @@ class TransferLearningI3D(nn.Module):
             # Unpack inputs
             video_frames, pose_keypoints = inputs
             
+            # Ensure video frames are in the right format [B, C, T, H, W]
+            if video_frames.dim() == 5 and video_frames.shape[1] != 3:
+                # Permute from [B, T, C, H, W] to [B, C, T, H, W]
+                video_frames = video_frames.permute(0, 2, 1, 3, 4)
+            
             # Process video frames
             video_features = self.backbone(video_frames)
             
@@ -84,9 +89,16 @@ class TransferLearningI3D(nn.Module):
             
             # Classification
             outputs = self.classifier(combined_features)
+            
         else:
             # Process only video frames
             video_frames = inputs
+            
+            # Ensure video frames are in the right format [B, C, T, H, W]
+            if video_frames.dim() == 5 and video_frames.shape[1] != 3:
+                # Permute from [B, T, C, H, W] to [B, C, T, H, W]
+                video_frames = video_frames.permute(0, 2, 1, 3, 4)
+                
             video_features = self.backbone(video_frames)
             outputs = self.classifier(video_features)
         
