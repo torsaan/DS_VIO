@@ -4,7 +4,7 @@ import torch.nn as nn
 from torchvision.models import resnet50
 
 class Model2DCNNLSTM(nn.Module):
-    def __init__(self, num_classes=2, hidden_size=512, use_pose=False, pose_input_size=66):
+    def __init__(self, num_classes=2, lstm_hidden_size=512, use_pose=False, pose_input_size=66, lstm_num_layers=2, dropout_prob=0.5, pretrained=True):
         super(Model2DCNNLSTM, self).__init__()
         # Load pre-trained ResNet but remove the last fully connected layer
         resnet = resnet50(pretrained=True)
@@ -20,10 +20,10 @@ class Model2DCNNLSTM(nn.Module):
         # LSTM for temporal modeling of visual features
         self.lstm = nn.LSTM(
             input_size=self.feature_dim,
-            hidden_size=hidden_size,
-            num_layers=2,
+            hidden_size=lstm_hidden_size,  # Fixed: use lstm_hidden_size instead of hidden_size
+            num_layers=lstm_num_layers,
             batch_first=True,
-            dropout=0.5,
+            dropout=dropout_prob,
             bidirectional=True
         )
         
@@ -32,7 +32,7 @@ class Model2DCNNLSTM(nn.Module):
             self.pose_encoder = nn.Sequential(
                 nn.Linear(pose_input_size, 128),
                 nn.ReLU(),
-                nn.Dropout(0.5),
+                nn.Dropout(dropout_prob),
                 nn.Linear(128, 64),
                 nn.ReLU()
             )
@@ -43,24 +43,24 @@ class Model2DCNNLSTM(nn.Module):
                 hidden_size=64,
                 num_layers=1,
                 batch_first=True,
-                dropout=0.5,
+                dropout=dropout_prob,
                 bidirectional=True
             )
             
             # Final classifier with combined features
             self.classifier = nn.Sequential(
-                nn.Linear(hidden_size * 2 + 64 * 2, hidden_size),  # *2 for bidirectional
+                nn.Linear(lstm_hidden_size * 2 + 64 * 2, lstm_hidden_size),  # *2 for bidirectional
                 nn.ReLU(),
-                nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
+                nn.Dropout(dropout_prob),
+                nn.Linear(lstm_hidden_size, num_classes)
             )
         else:
             # Final classifier without pose data
             self.classifier = nn.Sequential(
-                nn.Linear(hidden_size * 2, hidden_size),  # *2 for bidirectional
+                nn.Linear(lstm_hidden_size * 2, lstm_hidden_size),  # *2 for bidirectional
                 nn.ReLU(),
-                nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
+                nn.Dropout(dropout_prob),
+                nn.Linear(lstm_hidden_size, num_classes)
             )
         
     def forward(self, inputs):

@@ -12,9 +12,9 @@ from Models.model_3dcnn import Model3DCNN
 from Models.model_2dcnn_lstm import Model2DCNNLSTM
 from Models.model_transformer import VideoTransformer
 from Models.model_i3d import TransferLearningI3D
-from Models.model_two_stream import TwoStream
-from Models.model_slowfast import SlowFast
-from Models.model_r2plus1d import R2Plus1D
+from Models.model_two_stream import TwoStreamNetwork
+from Models.model_slowfast import SlowFastNetwork
+from Models.model_r2plus1d import R2Plus1DNet
 from Models.model_simplecnn import SimpleCNN
 from Models.model_hybrid import ModelHybrid
 from Models.model_Temporal3DCNN import Temporal3DCNN
@@ -35,9 +35,6 @@ def parse_args():
                         help="Batch size for training")
     parser.add_argument("--num_epochs", type=int, default=hp.NUM_EPOCHS, 
                         help="Number of training epochs")
-    parser.add_argument("--model_types", nargs="+", 
-                        default=['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d'],
-                        help="Model types to train")
     parser.add_argument("--use_pose", action="store_true", 
                         help="Use pose features in addition to video frames")
     parser.add_argument("--gpu", type=int, default=0, 
@@ -210,6 +207,11 @@ def get_hyperparameters(model_type, use_pose=False):
         }
     else:
         return {'num_classes': 2}
+    
+    
+    
+    
+    
 def main():
     # Parse arguments
     args = parse_args()

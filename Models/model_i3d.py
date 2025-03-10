@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 class TransferLearningI3D(nn.Module):
-    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66):
+    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66, dropout_prob=0.5,pretrained=True):
         super(TransferLearningI3D, self).__init__()
         
         # Load pre-trained I3D model (using PyTorchVideo's Slow-Fast R50)

@@ -4,18 +4,18 @@ import torch.nn as nn
 import timm
 
 class VideoTransformer(nn.Module):
-    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66):
+    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66, embed_dim=None, num_heads=8, num_layers=2, dropout=0.1):
         super(VideoTransformer, self).__init__()
         
         # Use timm's ViT but remove the classification head
         self.backbone = timm.create_model('vit_base_patch16_224', pretrained=True)
-        embed_dim = self.backbone.embed_dim
+        self.embed_dim = self.backbone.embed_dim  # Usually 768 for base ViT
         
-        # Create a new temporal transformer encoder
+        # Create a new temporal transformer encoder - use actual backbone embed_dim
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, 
+            d_model=self.embed_dim,  # Use actual embedding dimension from backbone
             nhead=8, 
-            dim_feedforward=embed_dim*4,
+            dim_feedforward=self.embed_dim*4,
             dropout=0.1,
             activation='gelu'
         )
@@ -43,17 +43,17 @@ class VideoTransformer(nn.Module):
             )
             self.pose_transformer = nn.TransformerEncoder(pose_encoder_layer, num_layers=2)
             
-            # Combined classifier
+            # Combined classifier - use actual backbone embed_dim
             self.classifier = nn.Sequential(
-                nn.Linear(embed_dim + 64, 512),
+                nn.Linear(self.embed_dim + 64, 512),  # Use actual embedding dim
                 nn.GELU(),
                 nn.Dropout(0.1),
                 nn.Linear(512, num_classes)
             )
         else:
-            # Video-only classifier
+            # Video-only classifier - use actual backbone embed_dim
             self.classifier = nn.Sequential(
-                nn.Linear(embed_dim, 512),
+                nn.Linear(self.embed_dim, 512),  # Use actual embedding dim 
                 nn.GELU(),
                 nn.Dropout(0.1),
                 nn.Linear(512, num_classes)

@@ -55,7 +55,7 @@ def get_hyperparameters(model_type, use_pose=False):
     elif model_type == '2d_cnn_lstm':
         return {
             'num_classes': 2,
-            'hidden_size': 512,  
+            'lstm_hidden_size': 512,  
             'use_pose': use_pose
         }
     elif model_type == 'transformer':
