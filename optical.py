@@ -42,9 +42,6 @@ def compute_optical_flow(prev_frame, next_frame):
 
     return flow, flow_vis
 
-
-
-
 def process_video(video_path, output_folder):
     """Process a single video and display optical flow."""
     print(f"Processing video: {video_path}")
@@ -57,26 +54,39 @@ def process_video(video_path, output_folder):
         cap.release()
         return
 
+    if "Violence" in video_path:
+        output_folder = os.path.join(output_folder, "Violence")  # Save in Violence folder
+    else:
+        output_folder = os.path.join(output_folder, "NonViolence")  # Save in NonViolence folder
 
     video_name = os.path.basename(video_path).split(".")[0]
     output_path = os.path.join(output_folder, f"{video_name}_flow.mp4")
 
+    os.makedirs(output_folder, exist_ok=True)
+
     frame_width = int(cap.get(3))
     frame_height = int(cap.get(4))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for .mp4 format
-    out = cv2.VideoWriter(output_path, fourcc, cap.get(cv2.CAP_PROP_FPS), (frame_width, frame_height))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for .mp4 format,,,,,,,,,,,,
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0 or fps > 60:
+        fps = 30
+    print(f"Using FPS: {fps}") 
+
+    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
 
 
     while cap.isOpened():
         ret, next_frame = cap.read()
         if not ret:
+            print("End of video or frame read error.")
             break  # End of video
 
         # Compute optical flow
         flow, flow_vis = compute_optical_flow(prev_frame, next_frame)
 
         # Show results
-        cv2.imshow("Original Video", next_frame)
+        #cv2.imshow("Original Video", next_frame)
         out.write(flow_vis)  # Save frame to video
         
         # Update previous frame
@@ -90,7 +100,6 @@ def process_video(video_path, output_folder):
     out.release()
     print(f"Saved optical flow video: {output_path}")
 
-
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Optical Flow Video Processing")
 parser.add_argument("mode", type=str, choices=["vid"], help="Set to 'vid' to process videos.")
@@ -99,8 +108,12 @@ parser.add_argument("num_videos", type=int, help="Number of videos to process (1
 args = parser.parse_args()
 
 # Path to videos
-violenceFolder = "./Data/Processed/standardized/Violence"
-nonviolenceFolder = "./Data/Processed/standardized/NonViolence"
+#violenceFolder = "./Data/Processed/standardized/Violence"
+#nonviolenceFolder = "./Data/Processed/standardized/NonViolence"
+
+violenceFolder = "./Data/VioNonVio/Violence"
+nonviolenceFolder = "./Data/VioNonVio/NonViolence"
+
 outputFolder = "./Data/OpticalOutput"
 
 # Get video list
