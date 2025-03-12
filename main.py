@@ -1,4 +1,4 @@
-
+#main.py
 import os
 import argparse
 import torch
@@ -80,61 +80,77 @@ def setup_device(gpu_id):
     
     return device
 
-def initialize_model(model_type, device, use_pose=False, hyperparams=None):
-    """Initialize model based on model type with optional hyperparameters"""
-    if hyperparams is None:
-        hyperparams = {}
+def initialize_model(model_type, device, use_pose=False, **overrides):
+    """
+    Initialize model based on model type with hyperparameters from central configuration
     
-    # Set default values for required parameters
-    required_params = {
-        'num_classes': 2
-    }
+    Args:
+        model_type: Type of model to initialize
+        device: Device to use (CPU or GPU)
+        use_pose: Whether to use pose data
+        **overrides: Any hyperparameters to override defaults
+        
+    Returns:
+        Initialized PyTorch model on the specified device
+    """
+    # Import the configuration function
+    from hyperparameters import get_model_config
     
-    # Merge required params with provided hyperparams
-    model_params = {**required_params, **hyperparams}
+    # Get model configuration with any overrides
+    config = get_model_config(model_type, **overrides)
     
+    # Add use_pose only for models that support it
+    if use_pose and model_type in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
+        config['use_pose'] = use_pose
+    elif 'use_pose' in config and model_type not in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
+        # Remove use_pose from models that don't support it
+        config.pop('use_pose')
+    
+    # Initialize the appropriate model with the config
     if model_type == '3d_cnn':
         from Models.model_3dcnn import Model3DCNN
-        model = Model3DCNN(**model_params).to(device)
+        model = Model3DCNN(**config).to(device)
         
     elif model_type == '2d_cnn_lstm':
         from Models.model_2dcnn_lstm import Model2DCNNLSTM
-        model_params['use_pose'] = use_pose
-        model = Model2DCNNLSTM(**model_params).to(device)
+        model = Model2DCNNLSTM(**config).to(device)
         
     elif model_type == 'transformer':
         from Models.model_transformer import VideoTransformer
-        model_params['use_pose'] = use_pose
-        model = VideoTransformer(**model_params).to(device)
+        model = VideoTransformer(**config).to(device)
         
     elif model_type == 'i3d':
         from Models.model_i3d import TransferLearningI3D
-        model_params['use_pose'] = use_pose
-        model = TransferLearningI3D(**model_params).to(device)
+        model = TransferLearningI3D(**config).to(device)
         
     elif model_type == 'simple_cnn':
         from Models.model_simplecnn import SimpleCNN
-        model = SimpleCNN(**model_params).to(device)
+        model = SimpleCNN(**config).to(device)
         
     elif model_type == 'temporal_3d_cnn':
         from Models.model_Temporal3DCNN import Temporal3DCNN
-        model = Temporal3DCNN(**model_params).to(device)
+        model = Temporal3DCNN(**config).to(device)
         
     # New models
     elif model_type == 'slowfast':
         from Models.model_slowfast import SlowFastNetwork
-        model = SlowFastNetwork(**model_params).to(device)
+        model = SlowFastNetwork(**config).to(device)
         
     elif model_type == 'r2plus1d':
         from Models.model_r2plus1d import R2Plus1DNet
-        model = R2Plus1DNet(**model_params).to(device)
+        model = R2Plus1DNet(**config).to(device)
         
     elif model_type == 'two_stream':
         from Models.model_two_stream import TwoStreamNetwork
-        model = TwoStreamNetwork(**model_params).to(device)
+        model = TwoStreamNetwork(**config).to(device)
         
     else:
         raise ValueError(f"Unknown model type: {model_type}")
+    
+    # Print model configuration if verbose logging is enabled
+    print(f"Initialized {model_type} with configuration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
     
     return model
 
@@ -287,7 +303,15 @@ def main():
             hyperparams = get_hyperparameters(model_type, args.use_pose)
         
         # Initialize model
-        model = initialize_model(model_type, device, args.use_pose, hyperparams)
+        # First, create a copy of hyperparams
+            model_params = hyperparams.copy()
+
+            # Remove use_pose from the hyperparams if it exists
+            if 'use_pose' in model_params:
+                model_params.pop('use_pose')
+
+            # Initialize model with correct arguments
+            model = initialize_model(model_type, device, args.use_pose, **model_params)
         
         # Setup checkpoint path for resuming
         checkpoint_path = None

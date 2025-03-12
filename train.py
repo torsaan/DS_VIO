@@ -297,7 +297,7 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         Trained model
     """
     # Import hyperparameters
-    from hyperparameters import get_optimizer, MODEL_CONFIGS, NUM_EPOCHS
+    from hyperparameters import get_optimizer, get_training_config, MODEL_CONFIGS, NUM_EPOCHS
     
     # Use default num_epochs if not specified
     if num_epochs is None:
@@ -313,11 +313,13 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
     # Set up criterion and optimizer
     criterion = nn.CrossEntropyLoss()
     
-    # Get optimizer configuration based on model type
-    if model_name in MODEL_CONFIGS:
-        optimizer_name = MODEL_CONFIGS[model_name].get('optimizer', 'adam')
-        default_lr = MODEL_CONFIGS[model_name].get('lr', 0.0001)
-    else:
+    # Get training config for this model type
+    try:
+        training_config = get_training_config(model_name)
+        optimizer_name = training_config.get('optimizer', 'adam')
+        default_lr = training_config.get('lr', 0.0001)
+    except ValueError:
+        # Fallback if model not found in training config
         optimizer_name = 'adam'
         default_lr = 0.0001
     
@@ -325,8 +327,14 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
     optimizer_name = kwargs.get('optimizer', optimizer_name)
     lr = kwargs.get('lr', default_lr)
     
-    # Create optimizer using the helper function
-    optimizer = get_optimizer(model, optimizer_name, lr, **kwargs)
+    # Create optimizer using the helper function with named parameters
+    optimizer = get_optimizer(
+        model, 
+        model_type=model_name,  # Pass model_name as model_type
+        optimizer_name=optimizer_name,
+        lr=lr,
+        **kwargs
+    )
     
     # Set up learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -440,7 +448,6 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
     
     return model
-
 def clear_cuda_memory():
     """Clear CUDA cache to prevent memory issues between model training"""
     import torch

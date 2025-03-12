@@ -61,8 +61,18 @@ def initialize_model(model_type, device, use_pose=False, custom_config=None):
     # Import the configuration function
     from hyperparameters import get_model_config
     
-    # Get model configuration with use_pose override
-    config = get_model_config(model_type, use_pose=use_pose)
+    # Get model configuration with use_pose override for models that support it
+    base_config = get_model_config(model_type)
+    
+    # Create a clean config dict to pass to the model
+    config = base_config.copy()
+    
+    # Override use_pose only for models that support it
+    if use_pose and model_type in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
+        config['use_pose'] = use_pose
+    elif 'use_pose' in config and model_type not in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
+        # Remove use_pose from models that don't support it
+        config.pop('use_pose')
     
     # Apply any custom configuration
     if custom_config:
@@ -143,7 +153,7 @@ def test_model(model_type, device, batch_size=2, use_pose=False, verbose=False):
             
             # Print the actual configuration used
             from hyperparameters import get_model_config
-            config = get_model_config(model_type, use_pose=use_pose)
+            config = get_model_config(model_type)
             print(f"Model configuration:")
             for key, value in config.items():
                 print(f"  {key}: {value}")
@@ -153,7 +163,7 @@ def test_model(model_type, device, batch_size=2, use_pose=False, verbose=False):
         inputs, labels = create_fake_batch(
             batch_size=batch_size, 
             model_type=model_type, 
-            use_pose=use_pose
+            use_pose=use_pose if model_type in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d'] else False
         )
         
         # Move data to device
@@ -167,8 +177,11 @@ def test_model(model_type, device, batch_size=2, use_pose=False, verbose=False):
             print_tensor_shape(inputs, "Input")
         
         # Get optimizer from hyperparameters
-        from hyperparameters import get_optimizer
-        optimizer = get_optimizer(model, model_type=model_type)
+        from hyperparameters import get_optimizer, get_training_config
+        
+        # Get training config to determine optimizer
+        training_config = get_training_config(model_type)
+        optimizer = get_optimizer(model, optimizer_name=training_config['optimizer'], lr=training_config['lr'])
         
         # Set up loss criterion
         criterion = nn.CrossEntropyLoss()
@@ -215,7 +228,7 @@ def main():
     
     # Check if hyperparameters.py exists
     try:
-        from hyperparameters import MODEL_CONFIGS
+        from hyperparameters import MODEL_CONFIGS, TRAINING_CONFIGS
         print(f"Found hyperparameters.py with {len(MODEL_CONFIGS)} model configurations")
     except ImportError:
         print("Error: hyperparameters.py not found or missing MODEL_CONFIGS.")
