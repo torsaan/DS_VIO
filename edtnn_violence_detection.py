@@ -6,6 +6,9 @@ for violence detection using the existing dataloader infrastructure.
 
 This script implements a novel neural network architecture based on knot theory
 and quantum entanglement concepts for violence detection in videos.
+
+https://github.com/RichardAragon/QGLS
+
 """
 
 import os
@@ -17,8 +20,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from tqdm import tqdm
-
-# Import from your existing codebase
 from utils.dataprep import prepare_violence_nonviolence_data
 from dataloader import get_dataloaders
 from train import clear_cuda_memory

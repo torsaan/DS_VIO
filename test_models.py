@@ -2,7 +2,7 @@
 # test_models_fixed.py
 """
 Updated script to test all video-based violence detection models.
-Includes fixes for tensor shape handling and proper model initialization.
+Uses centralized hyperparameters and proper model initialization.
 """
 
 import torch
@@ -45,112 +45,67 @@ def setup_device(gpu_id):
     
     return device
 
-def get_hyperparameters(model_type, use_pose=False):
-    """Get hyperparameters for a specific model type"""
-    if model_type == '3d_cnn':
-        return {
-            'num_classes': 2,
-            'use_pose': use_pose
-        }
-    elif model_type == '2d_cnn_lstm':
-        return {
-            'num_classes': 2,
-            'lstm_hidden_size': 512,  
-            'use_pose': use_pose
-        }
-    elif model_type == 'transformer':
-        return {
-            'num_classes': 2,
-            'use_pose': use_pose
-        }
-    elif model_type == 'i3d':
-        return {
-            'num_classes': 2,
-            'use_pose': use_pose
-        }
-    elif model_type == 'slowfast':
-        return {
-            'num_classes': 2,
-            'pretrained': True,
-            'alpha': 8,
-            'beta': 1/8,
-            'dropout_prob': 0.5
-        }
-    elif model_type == 'r2plus1d':
-        return {
-            'num_classes': 2,
-            'pretrained': True,
-            'dropout_prob': 0.5
-        }
-    elif model_type == 'two_stream':
-        return {
-            'num_classes': 2,
-            'spatial_weight': 1.0,
-            'temporal_weight': 1.5,
-            'pretrained': True,
-            'spatial_backbone': 'r3d_18',
-            'dropout_prob': 0.5,
-            'fusion': 'late'
-        }
-    elif model_type == 'simple_cnn':
-        return {
-            'num_classes': 2
-        }
-    elif model_type == 'temporal_3d_cnn':
-        return {
-            'num_classes': 2
-        }
-    else:
-        return {'num_classes': 2}
+def initialize_model(model_type, device, use_pose=False, custom_config=None):
+    """
+    Initialize model based on model type with centralized hyperparameters
     
-def initialize_model(model_type, device, use_pose=False, hyperparams=None):
-    """Initialize model based on model type with optional hyperparameters"""
-    if hyperparams is None:
-        hyperparams = {}
+    Args:
+        model_type: Type of model to initialize
+        device: Device to use (CPU or GPU)
+        use_pose: Whether to use pose data
+        custom_config: Custom configuration to override defaults
+        
+    Returns:
+        Initialized PyTorch model on the specified device
+    """
+    # Import the configuration function
+    from hyperparameters import get_model_config
     
-    # Ensure num_classes is set
-    hyperparams['num_classes'] = hyperparams.get('num_classes', 2)
+    # Get model configuration with use_pose override
+    config = get_model_config(model_type, use_pose=use_pose)
     
-    # Set use_pose parameter if model supports it
-    if model_type in ['2d_cnn_lstm', 'transformer', 'i3d']:
-        hyperparams['use_pose'] = use_pose
+    # Apply any custom configuration
+    if custom_config:
+        for key, value in custom_config.items():
+            config[key] = value
     
+    # Initialize the appropriate model with the config
     try:
         if model_type == '3d_cnn':
             from Models.model_3dcnn import Model3DCNN
-            model = Model3DCNN(**hyperparams).to(device)
+            model = Model3DCNN(**config).to(device)
             
         elif model_type == '2d_cnn_lstm':
             from Models.model_2dcnn_lstm import Model2DCNNLSTM
-            model = Model2DCNNLSTM(**hyperparams).to(device)
+            model = Model2DCNNLSTM(**config).to(device)
             
         elif model_type == 'transformer':
             from Models.model_transformer import VideoTransformer
-            model = VideoTransformer(**hyperparams).to(device)
+            model = VideoTransformer(**config).to(device)
             
         elif model_type == 'i3d':
             from Models.model_i3d import TransferLearningI3D
-            model = TransferLearningI3D(**hyperparams).to(device)
+            model = TransferLearningI3D(**config).to(device)
             
         elif model_type == 'simple_cnn':
             from Models.model_simplecnn import SimpleCNN
-            model = SimpleCNN(**hyperparams).to(device)
+            model = SimpleCNN(**config).to(device)
             
         elif model_type == 'temporal_3d_cnn':
             from Models.model_Temporal3DCNN import Temporal3DCNN
-            model = Temporal3DCNN(**hyperparams).to(device)
+            model = Temporal3DCNN(**config).to(device)
             
         elif model_type == 'slowfast':
             from Models.model_slowfast import SlowFastNetwork
-            model = SlowFastNetwork(**hyperparams).to(device)
+            model = SlowFastNetwork(**config).to(device)
             
         elif model_type == 'r2plus1d':
             from Models.model_r2plus1d import R2Plus1DNet
-            model = R2Plus1DNet(**hyperparams).to(device)
+            model = R2Plus1DNet(**config).to(device)
             
         elif model_type == 'two_stream':
             from Models.model_two_stream import TwoStreamNetwork
-            model = TwoStreamNetwork(**hyperparams).to(device)
+            model = TwoStreamNetwork(**config).to(device)
             
         else:
             raise ValueError(f"Unknown model type: {model_type}")
@@ -178,16 +133,20 @@ def test_model(model_type, device, batch_size=2, use_pose=False, verbose=False):
     print(f"\n{'='*20} Testing {model_type} {'='*20}")
     
     try:
-        # Get hyperparameters
-        hyperparams = get_hyperparameters(model_type, use_pose)
-        
-        # Initialize model
+        # Initialize model using centralized hyperparameters
         print(f"Initializing {model_type}...")
-        model = initialize_model(model_type, device, use_pose, hyperparams)
+        model = initialize_model(model_type, device, use_pose)
         print(f"Model initialized successfully.")
         
         if verbose:
             print_model_summary(model)
+            
+            # Print the actual configuration used
+            from hyperparameters import get_model_config
+            config = get_model_config(model_type, use_pose=use_pose)
+            print(f"Model configuration:")
+            for key, value in config.items():
+                print(f"  {key}: {value}")
         
         # Create a dummy batch
         print(f"Creating dummy batch...")
@@ -207,9 +166,12 @@ def test_model(model_type, device, batch_size=2, use_pose=False, verbose=False):
         if verbose:
             print_tensor_shape(inputs, "Input")
         
-        # Set up loss and optimizer
+        # Get optimizer from hyperparameters
+        from hyperparameters import get_optimizer
+        optimizer = get_optimizer(model, model_type=model_type)
+        
+        # Set up loss criterion
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
         
         # Forward pass
         print(f"Testing forward pass...")
@@ -241,6 +203,8 @@ def clear_cuda_memory():
     """Clear CUDA memory to prevent OOM errors between model tests"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        import gc
+        gc.collect()
 
 def main():
     # Parse arguments
@@ -249,11 +213,26 @@ def main():
     # Set up device
     device = setup_device(args.gpu)
     
+    # Check if hyperparameters.py exists
+    try:
+        from hyperparameters import MODEL_CONFIGS
+        print(f"Found hyperparameters.py with {len(MODEL_CONFIGS)} model configurations")
+    except ImportError:
+        print("Error: hyperparameters.py not found or missing MODEL_CONFIGS.")
+        print("Please create hyperparameters.py with the required configuration structure.")
+        return 1
+    
     # Results storage
     results = {}
     
     # Test each model type
     for model_type in args.model_types:
+        # Check if model type is defined in hyperparameters
+        from hyperparameters import MODEL_CONFIGS
+        if model_type not in MODEL_CONFIGS:
+            print(f"Warning: {model_type} not found in MODEL_CONFIGS, skipping...")
+            continue
+            
         # Test the model
         results[model_type] = test_model(
             model_type, device, args.batch_size, 

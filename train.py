@@ -273,9 +273,10 @@ def load_checkpoint(model, optimizer, scheduler, model_path, device):
     print(f"Resumed from epoch {checkpoint['epoch']}")
     return model, optimizer, scheduler, start_epoch, metrics
 
-def train_model(model_name, model, train_loader, val_loader, num_epochs=30, 
+# In train_model function in train.py
+def train_model(model_name, model, train_loader, val_loader, num_epochs=None, 
                 device=torch.device("cuda"), output_dir="./output", 
-                patience=7, resume_from=None, grad_clip=1.0):
+                patience=7, resume_from=None, grad_clip=None, **kwargs):
     """
     Train a model and save checkpoints with early stopping and AUC-ROC metrics
     
@@ -284,16 +285,24 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=30,
         model: PyTorch model to train
         train_loader: DataLoader for training data
         val_loader: DataLoader for validation data
-        num_epochs: Number of training epochs
+        num_epochs: Number of training epochs (default: from hyperparameters)
         device: Device to use for training
         output_dir: Directory to save model checkpoints and logs
         patience: Number of epochs with no improvement after which training will be stopped
         resume_from: Path to checkpoint to resume training from (None for starting from scratch)
         grad_clip: Value for gradient clipping (None to disable)
+        **kwargs: Additional parameters for optimizer configuration
         
     Returns:
         Trained model
     """
+    # Import hyperparameters
+    from hyperparameters import get_optimizer, MODEL_CONFIGS, NUM_EPOCHS
+    
+    # Use default num_epochs if not specified
+    if num_epochs is None:
+        num_epochs = NUM_EPOCHS
+    
     # Create model directory
     model_dir = os.path.join(output_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
@@ -303,7 +312,21 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=30,
     
     # Set up criterion and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
+    
+    # Get optimizer configuration based on model type
+    if model_name in MODEL_CONFIGS:
+        optimizer_name = MODEL_CONFIGS[model_name].get('optimizer', 'adam')
+        default_lr = MODEL_CONFIGS[model_name].get('lr', 0.0001)
+    else:
+        optimizer_name = 'adam'
+        default_lr = 0.0001
+    
+    # Override with kwargs if provided
+    optimizer_name = kwargs.get('optimizer', optimizer_name)
+    lr = kwargs.get('lr', default_lr)
+    
+    # Create optimizer using the helper function
+    optimizer = get_optimizer(model, optimizer_name, lr, **kwargs)
     
     # Set up learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -417,7 +440,6 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=30,
         print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
     
     return model
-
 
 def clear_cuda_memory():
     """Clear CUDA cache to prevent memory issues between model training"""
