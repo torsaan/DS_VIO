@@ -13,12 +13,25 @@ import matplotlib.pyplot as plt
 import argparse
 from utils.dataprep import prepare_violence_nonviolence_data
 from dataloader import get_dataloaders
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_recall_curve
+
+
+#Piss
+def convert_np(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_np(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_np(item) for item in obj]
+    else:
+        return obj
 
 
 def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                param_grid, base_params=None, device=torch.device("cuda"),
                output_dir="./hyperparam_search", num_epochs=10,
-               batch_size=8, num_workers=4, model_type='3d_cnn'):
+               batch_size=2, num_workers=4, model_type='3d_cnn'):
     """
     Perform grid search for hyperparameter optimization
     
@@ -115,9 +128,27 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         )
         
         # Evaluate model on validation set
-        val_loss, val_acc, _, _, all_probs, metrics_dict = evaluate_model(
-            trained_model, val_loader, criterion, device
-        )
+        result = evaluate_model(trained_model, val_loader, criterion, device)
+        if len(result) == 5:
+            val_loss, val_acc, all_preds, all_targets, all_probs = result
+            try:
+                roc_auc = roc_auc_score(all_targets, all_probs[:, 1])
+                pr_auc = average_precision_score(all_targets, all_probs[:, 1])
+                fpr, tpr, _ = roc_curve(all_targets, all_probs[:, 1])
+                precision, recall, _ = precision_recall_curve(all_targets, all_probs[:, 1])
+            except Exception as e:
+                print("Error computing metrics:", e)
+                roc_auc, pr_auc, fpr, tpr, precision, recall = 0.0, 0.0, [], [], [], []
+            metrics_dict = {
+                'roc_auc': roc_auc,
+                'pr_auc': pr_auc,
+                'fpr': fpr,
+                'tpr': tpr,
+                'precision': precision,
+                'recall': recall
+            }
+        else:
+            val_loss, val_acc, all_preds, all_targets, all_probs, metrics_dict = result
         
         # Extract evaluation metrics
         roc_auc = metrics_dict.get('roc_auc', 0)
@@ -156,12 +187,16 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
             print(f"New best parameters found with AUC {best_auc:.4f}")
         
         # Save current results
+        # Save current results with conversion for JSON serialization
+        results_to_dump = {
+            'results': results,
+            'best_params': best_params,
+            'best_auc': best_auc
+        }
+        results_serializable = convert_np(results_to_dump)
+
         with open(os.path.join(output_dir, 'grid_search_results.json'), 'w') as f:
-            json.dump({
-                'results': results,
-                'best_params': best_params,
-                'best_auc': best_auc
-            }, f, indent=4)
+            json.dump(results_serializable, f, indent=4)
         
         # Clear memory
         del model, trained_model

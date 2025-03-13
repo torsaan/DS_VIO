@@ -16,3 +16,5 @@
 *.pt
 *.pth
 /hyperparam_search
+/hyperparam_search_results
+*.pyc
