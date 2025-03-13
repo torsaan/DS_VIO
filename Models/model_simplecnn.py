@@ -32,32 +32,48 @@ class SimpleCNN(nn.Module):
         # Classifier - will determine size during forward pass
         self.classifier = None
         self.num_classes = num_classes
+        
+        # Flag to track if classifier has been initialized
+        self._classifier_initialized = False
+    
+    def _create_classifier(self, feature_size):
+        """Create classifier with correct input size on the same device as the features"""
+        device = next(self.features.parameters()).device
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_size, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, self.num_classes)
+        ).to(device)
+        self._classifier_initialized = True
+        print(f"Created classifier with input size: {feature_size} on device {device}")
     
     def forward(self, x):
+        # Print original input shape for debugging
+        if not self._classifier_initialized:
+            print(f"Original input shape: {x.shape}")
+        
         # Input shape is [batch_size, frames, channels, height, width]
         # Need to permute to [batch_size, channels, frames, height, width]
         if x.dim() == 5 and x.shape[1] != 3:
             x = x.permute(0, 2, 1, 3, 4)
-            print(f"Permuted input shape: {x.shape}")
+            if not self._classifier_initialized:
+                print(f"Permuted input shape: {x.shape}")
         
         # Pass through feature extractor
         x = self.features(x)
-        print(f"After features shape: {x.shape}")
+        if not self._classifier_initialized:
+            print(f"After features shape: {x.shape}")
         
         # Flatten
         x = x.view(x.size(0), -1)
-        print(f"Flattened shape: {x.shape}")
+        if not self._classifier_initialized:
+            print(f"Flattened shape: {x.shape}")
         
         # Initialize classifier on first forward pass if not done yet
-        if self.classifier is None:
+        if not self._classifier_initialized:
             feature_size = x.shape[1]
-            self.classifier = nn.Sequential(
-                nn.Linear(feature_size, 256),
-                nn.ReLU(),
-                nn.Dropout(0.5),
-                nn.Linear(256, self.num_classes)
-            )
-            print(f"Created classifier with input size: {feature_size}")
+            self._create_classifier(feature_size)
         
         # Classification
         x = self.classifier(x)

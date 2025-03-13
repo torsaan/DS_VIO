@@ -486,6 +486,7 @@ def sequential_hyperparameter_search(model_classes, train_paths, train_labels, v
         
         return all_results
     
+# Modify the param_grid in the main() function
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description="Run sequential hyperparameter search for multiple models")
@@ -537,13 +538,13 @@ def main():
     param_grids = {
         '3d_cnn': {
             'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False, True]
+            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
         },
         '2d_cnn_lstm': {
             'lstm_hidden_size': [256, 512],
             'lstm_num_layers': [1, 2],
             'dropout_prob': [0.3, 0.5],
-            'use_pose': [False, True]
+            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
         },
         'transformer': {
             'embed_dim': [256, 512],
@@ -553,7 +554,7 @@ def main():
         },
         'i3d': {
             'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False, True]
+            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
         },
         'slowfast': {
             'alpha': [4, 8],
@@ -589,5 +590,9 @@ def main():
         print(f"  Best parameters: {result['best_params']}")
         print(f"  Duration: {result['duration']}")
 
+
+
+
+        
 if __name__ == "__main__":
     main()

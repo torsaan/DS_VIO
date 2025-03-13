@@ -11,3 +11,4 @@ from .model_Temporal3DCNN import Temporal3DCNN
 from .model_slowfast import SlowFastNetwork
 from .model_r2plus1d import R2Plus1DNet  # Changed from R2Plus1D
 from .model_two_stream import TwoStreamNetwork
+from .model_edtnn import ModelEDTNN

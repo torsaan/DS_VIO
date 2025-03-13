@@ -441,13 +441,18 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         # Clear CUDA cache after each epoch to prevent memory fragmentation
         clear_cuda_memory()
     
-    # Load best model weights
-    if os.path.exists(best_model_path):
-        checkpoint = torch.load(best_model_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
+        if os.path.exists(best_model_path):
+            checkpoint = torch.load(best_model_path, map_location=device)
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+            print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
+        
+        return model
     
-    return model
+
+    
 def clear_cuda_memory():
     """Clear CUDA cache to prevent memory issues between model training"""
     import torch

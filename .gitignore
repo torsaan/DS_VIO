@@ -18,3 +18,8 @@
 /hyperparam_search
 /hyperparam_search_results
 *.pyc
+*.png
+/hyperparameter_search_hybrid
+/logs
+/output
+/incremental_search
