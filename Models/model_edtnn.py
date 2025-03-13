@@ -425,13 +425,12 @@ class CollapseResolutionLayer(nn.Module):
 class ModelEDTNN(nn.Module):
     """
     Entanglement-Driven Topological Neural Network (ED-TNN) model for violence detection.
-    This model integrates with the existing codebase by using the same video input format
-    and supporting pose data.
+    This model uses only video input (no pose data).
     """
     
     def __init__(self, num_classes=2, knot_type='trefoil', node_density=64, 
                  features_per_node=16, collapse_method='entropy', use_pose=False, 
-                 pose_input_size=66, pretrained=True):
+                 pretrained=True):
         """
         Initialize the ED-TNN model for violence detection.
         
@@ -441,8 +440,7 @@ class ModelEDTNN(nn.Module):
             node_density: Number of nodes in the topology
             features_per_node: Number of features per node
             collapse_method: Method for the collapse layer
-            use_pose: Whether to use pose data in addition to video
-            pose_input_size: Dimension of pose input (33 keypoints x 2 coordinates = 66)
+            use_pose: Not used, included for compatibility (always False)
             pretrained: Whether to use pretrained weights for the backbone
         """
         super(ModelEDTNN, self).__init__()
@@ -458,39 +456,15 @@ class ModelEDTNN(nn.Module):
         # Save parameters
         self.num_classes = num_classes
         self.features_per_node = features_per_node
-        self.use_pose = use_pose
+        self.use_pose = False  # Always set to False
         
-        # Video feature extractor (using r3d_18 as backbone, compatible with existing code)
+        # Video feature extractor (using r3d_18 as backbone)
         self.backbone = r3d_18(pretrained=pretrained)
         self.backbone_feature_dim = self.backbone.fc.in_features
         self.backbone.fc = nn.Linear(self.backbone_feature_dim, node_density * features_per_node)
         
-        # Pose feature processing (if using pose)
-        if use_pose:
-            self.pose_encoder = nn.Sequential(
-                nn.Linear(pose_input_size, 128),
-                nn.ReLU(),
-                nn.Dropout(0.5),
-                nn.Linear(128, 64),
-                nn.ReLU()
-            )
-            
-            # Temporal modeling for pose data
-            self.pose_temporal = nn.GRU(
-                input_size=64,
-                hidden_size=64,
-                num_layers=1,
-                batch_first=True,
-                bidirectional=True
-            )
-            
-            # Final pose projection
-            self.pose_projector = nn.Linear(128, node_density * features_per_node // 2)
-            
-            # Total feature dimension after combining video and pose
-            combined_dim = node_density * features_per_node + node_density * features_per_node // 2
-        else:
-            combined_dim = node_density * features_per_node
+        # Feature dimension
+        combined_dim = node_density * features_per_node
         
         # ED-TNN specific layers
         self.entangled_layer = EntangledConnectionLayer(
@@ -511,66 +485,27 @@ class ModelEDTNN(nn.Module):
             collapse_method=collapse_method
         )
     
-    def forward(self, inputs):
+def forward(self, x):
         """
         Forward pass through the ED-TNN model.
         
         Args:
-            inputs: Input data (video frames) or tuple of (video frames, pose keypoints)
+            x: Input data (video frames)
             
         Returns:
             Output predictions
         """
-        if self.use_pose:
-            # Unpack inputs
-            video_frames, pose_keypoints = inputs
+        # Process video frames
+        # Ensure input is in format [B, C, T, H, W]
+        if x.dim() == 5 and x.shape[1] != 3:
+            # Input is [B, T, C, H, W], permute to [B, C, T, H, W]
+            x = x.permute(0, 2, 1, 3, 4)
             
-            # Process video frames
-            # Ensure input is in format [B, C, T, H, W]
-            if video_frames.dim() == 5 and video_frames.shape[1] != 3:
-                # Input is [B, T, C, H, W], permute to [B, C, T, H, W]
-                video_frames = video_frames.permute(0, 2, 1, 3, 4)
-                
-            # Extract video features
-            video_features = self.backbone(video_frames)
-            
-            # Process pose data
-            batch_size, seq_length, pose_dim = pose_keypoints.shape
-            
-            # Process through pose encoder
-            pose_features = self.pose_encoder(pose_keypoints.reshape(-1, pose_dim))
-            pose_features = pose_features.view(batch_size, seq_length, -1)
-            
-            # Apply GRU for temporal modeling
-            pose_features, _ = self.pose_temporal(pose_features)
-            
-            # Use final state and project to desired dimension
-            pose_features = pose_features[:, -1, :]  # [B, 128]
-            pose_features = self.pose_projector(pose_features)
-            
-            # Combine features
-            combined_features = torch.cat([video_features, pose_features], dim=1)
-            
-            # Apply entangled connections
-            x = self.entangled_layer(combined_features)
-        else:
-            # Process only video frames
-            # Ensure input is in format [B, C, T, H, W]
-            if isinstance(inputs, tuple):
-                # Handle case where inputs might be a tuple despite use_pose=False
-                video_frames = inputs[0]
-            else:
-                video_frames = inputs
-                
-            if video_frames.dim() == 5 and video_frames.shape[1] != 3:
-                # Input is [B, T, C, H, W], permute to [B, C, T, H, W]
-                video_frames = video_frames.permute(0, 2, 1, 3, 4)
-                
-            # Extract video features
-            video_features = self.backbone(video_frames)
-            
-            # Apply entangled connections
-            x = self.entangled_layer(video_features)
+        # Extract video features
+        video_features = self.backbone(x)
+        
+        # Apply entangled connections
+        x = self.entangled_layer(video_features)
         
         # Reshape for propagator
         batch_size = x.shape[0]

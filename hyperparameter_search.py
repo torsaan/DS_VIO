@@ -3,6 +3,7 @@ import os
 import itertools
 import json
 import torch
+import torch.optim as optim
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import roc_auc_score
@@ -10,28 +11,11 @@ from train import train_model, clear_cuda_memory
 from dataloader import get_dataloaders
 from evaluations import evaluate_model
 import matplotlib.pyplot as plt
-import argparse
-from utils.dataprep import prepare_violence_nonviolence_data
-from dataloader import get_dataloaders
-from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_recall_curve
-
-
-#Piss
-def convert_np(obj):
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, dict):
-        return {k: convert_np(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_np(item) for item in obj]
-    else:
-        return obj
-
 
 def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                param_grid, base_params=None, device=torch.device("cuda"),
                output_dir="./hyperparam_search", num_epochs=10,
-               batch_size=2, num_workers=4, model_type='3d_cnn'):
+               batch_size=8, num_workers=4, model_type='3d_cnn'):
     """
     Perform grid search for hyperparameter optimization
     
@@ -57,41 +41,54 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
     if base_params is None:
         base_params = {}
     
+    # Always ensure pose is disabled
+    base_params['use_pose'] = False
+    
+    # Extract training specific parameters from param_grid
+    train_param_names = ['learning_rate', 'weight_decay']
+    model_param_names = [name for name in param_grid.keys() if name not in train_param_names]
+    
+    # Separate grids
+    train_param_grid = {name: param_grid[name] for name in train_param_names if name in param_grid}
+    model_param_grid = {name: param_grid[name] for name in model_param_names}
+    
     # Get all parameter combinations
-    param_names = list(param_grid.keys())
-    param_values = list(param_grid.values())
-    param_combinations = list(itertools.product(*param_values))
+    model_param_names = list(model_param_grid.keys())
+    model_param_values = list(model_param_grid.values())
+    model_combinations = list(itertools.product(*model_param_values))
+    
+    train_param_names = list(train_param_grid.keys())
+    train_param_values = list(train_param_grid.values())
+    train_combinations = list(itertools.product(*train_param_values))
+    
+    # Combine all parameters for complete combinations
+    all_combinations = []
+    for model_combo in model_combinations:
+        for train_combo in train_combinations:
+            all_combinations.append((model_combo, train_combo))
     
     # Initialize results storage
     results = []
     best_auc = 0.0
-    best_params = None
+    best_model_params = None
+    best_train_params = None
     
     # Set up criterion
     criterion = torch.nn.CrossEntropyLoss()
     
-    # Set up CSV logger with timestamp
-    from utils.logger import CSVLogger
-    from datetime import datetime
-    
-    # Define CSV header fields
-    fieldnames = ['timestamp', 'combination_id'] + param_names + ['val_loss', 'val_acc', 'roc_auc', 'pr_auc']
-    
-    # Initialize logger
-    logger = CSVLogger(
-        os.path.join(output_dir, 'grid_search_log.csv'),
-        fieldnames=fieldnames
-    )
-    
     # Loop through all parameter combinations
-    for i, combination in enumerate(tqdm(param_combinations, desc="Hyperparameter Search")):
+    for i, (model_combo, train_combo) in enumerate(tqdm(all_combinations, desc="Hyperparameter Search")):
         # Clear CUDA memory
         clear_cuda_memory()
         
-        # Create parameter dictionary for this combination
-        params = base_params.copy()
-        for name, value in zip(param_names, combination):
-            params[name] = value
+        # Create parameter dictionaries for this combination
+        model_params = base_params.copy()
+        for name, value in zip(model_param_names, model_combo):
+            model_params[name] = value
+        
+        train_params = {}
+        for name, value in zip(train_param_names, train_combo):
+            train_params[name] = value
         
         # Create model name
         model_name = f"model_{i}"
@@ -99,11 +96,21 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         os.makedirs(model_dir, exist_ok=True)
         
         # Log this combination
-        param_str = ", ".join([f"{name}={value}" for name, value in zip(param_names, combination)])
-        print(f"\nTrying combination {i+1}/{len(param_combinations)}: {param_str}")
+        model_str = ", ".join([f"{name}={value}" for name, value in zip(model_param_names, model_combo)])
+        train_str = ", ".join([f"{name}={value}" for name, value in zip(train_param_names, train_combo)])
+        print(f"\nTrying combination {i+1}/{len(all_combinations)}:")
+        print(f"  Model params: {model_str}")
+        print(f"  Train params: {train_str}")
         
         # Create model with current parameters
-        model = model_class(**params).to(device)
+        model = model_class(**model_params).to(device)
+        
+        # Create optimizer with current parameters
+        optimizer = None
+        if 'learning_rate' in train_params:
+            lr = train_params['learning_rate']
+            weight_decay = train_params.get('weight_decay', 0)
+            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Create dataloaders with current batch size
         train_loader, val_loader, _ = get_dataloaders(
@@ -124,90 +131,70 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
             num_epochs=num_epochs,
             device=device,
             output_dir=output_dir,
-            patience=3  # Use shorter patience for hyperparameter search
+            patience=3,  # Use shorter patience for hyperparameter search
+            optimizer=optimizer  # Pass custom optimizer if created
         )
         
         # Evaluate model on validation set
-        result = evaluate_model(trained_model, val_loader, criterion, device)
-        if len(result) == 5:
-            val_loss, val_acc, all_preds, all_targets, all_probs = result
-            try:
-                roc_auc = roc_auc_score(all_targets, all_probs[:, 1])
-                pr_auc = average_precision_score(all_targets, all_probs[:, 1])
-                fpr, tpr, _ = roc_curve(all_targets, all_probs[:, 1])
-                precision, recall, _ = precision_recall_curve(all_targets, all_probs[:, 1])
-            except Exception as e:
-                print("Error computing metrics:", e)
-                roc_auc, pr_auc, fpr, tpr, precision, recall = 0.0, 0.0, [], [], [], []
-            metrics_dict = {
-                'roc_auc': roc_auc,
-                'pr_auc': pr_auc,
-                'fpr': fpr,
-                'tpr': tpr,
-                'precision': precision,
-                'recall': recall
-            }
-        else:
-            val_loss, val_acc, all_preds, all_targets, all_probs, metrics_dict = result
+        val_loss, val_acc, all_preds, all_targets, all_probs = evaluate_model(
+            trained_model, val_loader, criterion, device
+        )
         
-        # Extract evaluation metrics
-        roc_auc = metrics_dict.get('roc_auc', 0)
-        pr_auc = metrics_dict.get('pr_auc', 0)
+        # Calculate metrics
+        try:
+            roc_auc = roc_auc_score(all_targets, all_probs[:, 1])
+        except:
+            roc_auc = 0.0
+            
+        metrics_dict = {
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+            'roc_auc': roc_auc
+        }
         
         # Save metrics
         combination_result = {
-            'params': {name: value for name, value in zip(param_names, combination)},
+            'model_params': {name: value for name, value in zip(model_param_names, model_combo)},
+            'train_params': {name: value for name, value in zip(train_param_names, train_combo)},
             'metrics': metrics_dict
         }
         results.append(combination_result)
         
-        # Log results to CSV
-        log_entry = {
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'combination_id': i
-        }
-        
-        # Add parameter values
-        for name, value in zip(param_names, combination):
-            log_entry[name] = value
-            
-        # Add metrics
-        log_entry['val_loss'] = val_loss
-        log_entry['val_acc'] = val_acc
-        log_entry['roc_auc'] = roc_auc
-        log_entry['pr_auc'] = pr_auc
-        
-        # Write to CSV log
-        logger.log(log_entry)
-        
         # Check if this is the best model
         if roc_auc > best_auc:
             best_auc = roc_auc
-            best_params = combination_result['params']
+            best_model_params = {name: value for name, value in zip(model_param_names, model_combo)}
+            best_train_params = {name: value for name, value in zip(train_param_names, train_combo)}
             print(f"New best parameters found with AUC {best_auc:.4f}")
         
         # Save current results
-        # Save current results with conversion for JSON serialization
-        results_to_dump = {
-            'results': results,
-            'best_params': best_params,
-            'best_auc': best_auc
-        }
-        results_serializable = convert_np(results_to_dump)
-
         with open(os.path.join(output_dir, 'grid_search_results.json'), 'w') as f:
-            json.dump(results_serializable, f, indent=4)
+            json.dump({
+                'results': results,
+                'best_model_params': best_model_params,
+                'best_train_params': best_train_params,
+                'best_auc': best_auc
+            }, f, indent=4)
         
         # Clear memory
         del model, trained_model
         clear_cuda_memory()
     
     # Plot results
-    plot_grid_search_results(results, param_names, output_dir)
+    plot_grid_search_results(results, model_param_names + train_param_names, output_dir)
+    
+    # Combine best parameters
+    best_params = {}
+    if best_model_params:
+        best_params.update(best_model_params)
+    if best_train_params:
+        best_params.update(best_train_params)
     
     return {
         'results': results,
         'best_params': best_params,
+        'best_model_params': best_model_params, 
+        'best_train_params': best_train_params,
         'best_auc': best_auc
     }
 
@@ -221,9 +208,20 @@ def plot_grid_search_results(results, param_names, output_dir):
         auc_values = []
         
         for result in results:
-            param_values.append(result['params'][param_name])
+            # Check if parameter is in model_params or train_params
+            if param_name in result.get('model_params', {}):
+                param_values.append(result['model_params'][param_name])
+            elif param_name in result.get('train_params', {}):
+                param_values.append(result['train_params'][param_name])
+            else:
+                continue
+                
             auc_values.append(result['metrics']['roc_auc'])
         
+        # Skip if no values found
+        if not param_values:
+            continue
+            
         # Create scatter plot
         plt.scatter(param_values, auc_values, label=param_name)
         
@@ -276,8 +274,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'lstm_hidden_size': [256, 512],
             'lstm_num_layers': [1, 2],
             'dropout_prob': [0.3, 0.5],
-            'learning_rate': [1e-4, 5e-4],
-            'bidirectional': [True, False]
+            'learning_rate': [1e-4, 5e-4]
         }
         
         base_params = {
@@ -298,8 +295,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         }
         
         base_params = {
-            'num_classes': 2,
-            'use_pose': False
+            'num_classes': 2
         }
         
         model_type = 'transformer'
@@ -310,7 +306,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'alpha': [4, 8],  # Speed ratio options
             'beta': [1/8, 1/4],  # Channel ratio options
             'dropout_prob': [0.3, 0.5],
-            'fusion_places': [['res2', 'res3', 'res4', 'res5'], ['res3', 'res4', 'res5']]
+            'learning_rate': [1e-4, 5e-4]
         }
         
         base_params = {
@@ -324,7 +320,8 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
             'dropout_prob': [0.3, 0.5, 0.7],
-            'frozen_layers': [None, ['stem'], ['stem', 'layer1']]
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5]
         }
         
         base_params = {
@@ -340,6 +337,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'spatial_weight': [0.8, 1.0, 1.2],
             'temporal_weight': [1.2, 1.5, 1.8],
             'dropout_prob': [0.3, 0.5],
+            'learning_rate': [1e-4, 5e-4],
             'fusion': ['late', 'conv']
         }
         
@@ -351,11 +349,57 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
         model_type = 'two_stream'
         
+    elif model_class.__name__ == 'TransferLearningI3D':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'dropout_prob': [0.3, 0.5, 0.7],
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5]
+        }
+        
+        base_params = {
+            'num_classes': 2,
+            'pretrained': True
+        }
+        
+        model_type = 'i3d'
+        
+    elif model_class.__name__ == 'ModelHybrid':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5]
+        }
+        
+        base_params = {
+            'num_classes': 2
+        }
+        
+        model_type = 'hybrid'
+        
+    elif model_class.__name__ == 'ModelEDTNN':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'knot_type': ['trefoil', 'figure-eight'],
+            'node_density': [32, 64, 128],
+            'features_per_node': [8, 16, 32],
+            'collapse_method': ['entropy', 'energy', 'tension'],
+            'learning_rate': [1e-4, 5e-4],
+            'weight_decay': [1e-5]
+        }
+        
+        base_params = {
+            'num_classes': 2,
+            'pretrained': True
+        }
+        
+        model_type = 'edtnn'
+    
     else:
         raise ValueError(f"Unknown model class: {model_class.__name__}")
     
     # Run grid search
-    return grid_search(
+    results = grid_search(
         model_class, 
         train_paths, train_labels, 
         val_paths, val_labels,
@@ -364,235 +408,54 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         output_dir=output_dir,
         model_type=model_type
     )
-
-def sequential_hyperparameter_search(model_classes, train_paths, train_labels, val_paths, val_labels,
-                                        param_grids, base_params=None, output_dir="./hyperparam_search",
-                                        device=torch.device("cuda"), num_epochs=10):
-        """
-        Run hyperparameter search for multiple models sequentially
+    
+    # Also save the best model with best parameters for ready use
+    if results['best_params']:
+        print("\nTraining final model with best parameters...")
         
-        Args:
-            model_classes: Dictionary mapping model names to model classes
-            train_paths, val_paths: Lists of video paths for training and validation
-            train_labels, val_labels: Lists of labels for training and validation
-            param_grids: Dictionary mapping model names to parameter grids
-            base_params: Dictionary mapping model names to base parameters
-            output_dir: Directory to save results
-            device: Device to use for training
-            num_epochs: Number of epochs to train each model
-            
-        Returns:
-            Dictionary with best parameters for each model
-        """
-        os.makedirs(output_dir, exist_ok=True)
+        # Create model with best parameters
+        model_params = base_params.copy()
+        for param, value in results['best_model_params'].items():
+            model_params[param] = value
         
-        from datetime import datetime
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        final_model = model_class(**model_params).to(device)
         
-        # Initialize results summary
-        all_results = {}
+        # Create optimizer with best parameters
+        lr = results['best_train_params'].get('learning_rate', 0.0001)
+        weight_decay = results['best_train_params'].get('weight_decay', 0)
+        optimizer = optim.Adam(final_model.parameters(), lr=lr, weight_decay=weight_decay)
         
-        # Log start of hyperparameter search
-        with open(os.path.join(output_dir, 'search_summary.txt'), 'w') as f:
-            f.write(f"Sequential Hyperparameter Search started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Models to test: {', '.join(model_classes.keys())}\n\n")
+        # Get full dataloaders for final training
+        train_loader, val_loader, _ = get_dataloaders(
+            train_paths, train_labels, 
+            val_paths, val_labels,
+            val_paths, val_labels,
+            batch_size=8,
+            num_workers=4,
+            model_type=model_type
+        )
         
-        # Create base_params if None
-        if base_params is None:
-            base_params = {model_name: {} for model_name in model_classes.keys()}
+        # Train with best parameters for more epochs
+        best_model = train_model(
+            model_name=f"best_{model_class.__name__}",
+            model=final_model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            num_epochs=20,  # More epochs for final model
+            device=device,
+            output_dir=output_dir,
+            optimizer=optimizer
+        )
         
-        # Run search for each model
-        for model_name, model_class in model_classes.items():
-            print(f"\n{'='*80}")
-            print(f"Starting hyperparameter search for {model_name}")
-            print(f"{'='*80}")
-            
-            # Get parameter grid and base parameters for this model
-            param_grid = param_grids.get(model_name, {})
-            base_param = base_params.get(model_name, {})
-            
-            if not param_grid:
-                print(f"No parameter grid defined for {model_name}, skipping...")
-                continue
-            
-            # Create model-specific output directory
-            model_output_dir = os.path.join(output_dir, model_name)
-            
-            # Determine model type for dataloader configuration
-            if "3d_cnn" in model_name.lower():
-                model_type = "3d_cnn"
-            elif "lstm" in model_name.lower():
-                model_type = "2d_cnn_lstm"
-            elif "transformer" in model_name.lower():
-                model_type = "transformer"
-            else:
-                model_type = "3d_cnn"  # Default
-            
-            # Run grid search for this model
-            try:
-                start_time = datetime.now()
-                print(f"Starting search at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                
-                results = grid_search(
-                    model_class=model_class,
-                    train_paths=train_paths,
-                    train_labels=train_labels,
-                    val_paths=val_paths,
-                    val_labels=val_labels,
-                    param_grid=param_grid,
-                    base_params=base_param,
-                    device=device,
-                    output_dir=model_output_dir,
-                    num_epochs=num_epochs,
-                    model_type=model_type
-                )
-                
-                end_time = datetime.now()
-                duration = end_time - start_time
-                
-                # Store results
-                all_results[model_name] = {
-                    'best_params': results['best_params'],
-                    'best_auc': results['best_auc'],
-                    'start_time': start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'end_time': end_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'duration': str(duration)
-                }
-                
-                # Log results
-                with open(os.path.join(output_dir, 'search_summary.txt'), 'a') as f:
-                    f.write(f"Results for {model_name}:\n")
-                    f.write(f"  Duration: {duration}\n")
-                    f.write(f"  Best AUC: {results['best_auc']:.4f}\n")
-                    f.write(f"  Best parameters: {results['best_params']}\n\n")
-                
-            except Exception as e:
-                print(f"Error during hyperparameter search for {model_name}: {e}")
-                # Log error
-                with open(os.path.join(output_dir, 'search_summary.txt'), 'a') as f:
-                    f.write(f"Error during hyperparameter search for {model_name}: {str(e)}\n\n")
+        # Save final model
+        torch.save(best_model.state_dict(), os.path.join(output_dir, f"final_best_{model_class.__name__}.pth"))
         
-        # Save all results to a single JSON file
-        with open(os.path.join(output_dir, 'all_results.json'), 'w') as f:
-            json.dump(all_results, f, indent=2)
-        
-        # Log completion
-        with open(os.path.join(output_dir, 'search_summary.txt'), 'a') as f:
-            f.write(f"\nSequential Hyperparameter Search completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            
-            # Find best overall model
-            if all_results:
-                best_model = max(all_results.items(), key=lambda x: x[1]['best_auc'])
-                f.write(f"\nBest overall model: {best_model[0]} with AUC {best_model[1]['best_auc']:.4f}\n")
-        
-        return all_results
+        # Save best parameters to a separate file for easy loading
+        with open(os.path.join(output_dir, f"best_params_{model_class.__name__}.json"), 'w') as f:
+            json.dump({
+                'model_params': results['best_model_params'],
+                'train_params': results['best_train_params']
+            }, f, indent=4)
     
-# Modify the param_grid in the main() function
-def main():
-    # Parse arguments
-    parser = argparse.ArgumentParser(description="Run sequential hyperparameter search for multiple models")
-    parser.add_argument("--data_dir", type=str, default="./Data/Processed/standardized",
-                      help="Directory containing videos")
-    parser.add_argument("--output_dir", type=str, default="./hyperparam_search",
-                      help="Directory to save search results")
-    parser.add_argument("--gpu", type=int, default=0,
-                      help="GPU ID to use (-1 for CPU)")
-    parser.add_argument("--num_epochs", type=int, default=10,
-                      help="Number of epochs for each trial")
-    parser.add_argument("--model_types", nargs="+", 
-                      default=['3d_cnn', '2d_cnn_lstm', 'transformer'],
-                      help="Model types to search")
-    args = parser.parse_args()
-    
-    # Set device
-    device = torch.device(f"cuda:{args.gpu}" if args.gpu >= 0 and torch.cuda.is_available() else "cpu")
-    
-    # Prepare data
-    train_paths, train_labels, val_paths, val_labels, _, _ = prepare_violence_nonviolence_data(args.data_dir)
-    
-    # Use subset of data for faster search
-    subset_size = min(len(train_paths) // 4, 100)  # Use at most 100 samples
-    train_paths_subset = train_paths[:subset_size]
-    train_labels_subset = train_labels[:subset_size]
-    
-    # Define model classes
-    from Models.model_3dcnn import Model3DCNN
-    from Models.model_2dcnn_lstm import Model2DCNNLSTM
-    from Models.model_transformer import VideoTransformer
-    from Models.model_i3d import TransferLearningI3D
-    from Models.model_slowfast import SlowFastNetwork
-    from Models.model_r2plus1d import R2Plus1DNet
-    
-    model_classes = {
-        '3d_cnn': Model3DCNN,
-        '2d_cnn_lstm': Model2DCNNLSTM,
-        'transformer': VideoTransformer,
-        'i3d': TransferLearningI3D,
-        'slowfast': SlowFastNetwork,
-        'r2plus1d': R2Plus1DNet
-    }
-    
-    # Filter model classes based on args.model_types
-    selected_model_classes = {k: v for k, v in model_classes.items() if k in args.model_types}
-    
-    # Define parameter grids for each model
-    param_grids = {
-        '3d_cnn': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
-        },
-        '2d_cnn_lstm': {
-            'lstm_hidden_size': [256, 512],
-            'lstm_num_layers': [1, 2],
-            'dropout_prob': [0.3, 0.5],
-            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
-        },
-        'transformer': {
-            'embed_dim': [256, 512],
-            'num_heads': [4, 8],
-            'num_layers': [2, 4],
-            'dropout': [0.1, 0.3]
-        },
-        'i3d': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False]  # MODIFIED: Remove True option to avoid pose data issues
-        },
-        'slowfast': {
-            'alpha': [4, 8],
-            'beta': [1/8, 1/4],
-            'dropout_prob': [0.3, 0.5]
-        },
-        'r2plus1d': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'frozen_layers': [None, ['stem'], ['stem', 'layer1']]
-        }
-    }
-    
-    # Run sequential search
-    results = sequential_hyperparameter_search(
-        model_classes=selected_model_classes,
-        train_paths=train_paths_subset,
-        train_labels=train_labels_subset,
-        val_paths=val_paths,
-        val_labels=val_labels,
-        param_grids={k: v for k, v in param_grids.items() if k in args.model_types},
-        output_dir=args.output_dir,
-        device=device,
-        num_epochs=args.num_epochs
-    )
-    
-    # Print summary
-    print("\nHyperparameter search complete!")
-    print(f"Results saved to {args.output_dir}")
-    
-    for model_name, result in results.items():
-        print(f"\n{model_name}:")
-        print(f"  Best AUC: {result['best_auc']:.4f}")
-        print(f"  Best parameters: {result['best_params']}")
-        print(f"  Duration: {result['duration']}")
-
-
-
-
-        
-if __name__ == "__main__":
-    main()
+    return results

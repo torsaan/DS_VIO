@@ -1,4 +1,4 @@
-# trainer.py
+# train.py
 import os
 import torch
 import torch.nn as nn
@@ -71,23 +71,15 @@ def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None
     
     progress_bar = tqdm(data_loader, desc="Training")
     for batch in progress_bar:
-        # Handle different input types (with or without pose data)
-        if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-            frames, pose, targets = batch
-            frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-            inputs = (frames, pose)
-        elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-            frames, targets = batch
-            frames, targets = frames.to(device), targets.to(device)
-            inputs = frames
-        else:
-            raise ValueError("Unexpected batch format")
+        # Handle input (video only)
+        frames, targets = batch
+        frames, targets = frames.to(device), targets.to(device)
         
         # Zero gradients
         optimizer.zero_grad()
         
         # Forward pass
-        outputs = model(inputs)
+        outputs = model(frames)
         
         # Calculate loss
         loss = criterion(outputs, targets)
@@ -136,20 +128,12 @@ def validate(model, data_loader, criterion, device):
     
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Validation"):
-            # Handle different input types (with or without pose data)
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            # Handle input (video only)
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
             
             # Forward pass
-            outputs = model(inputs)
+            outputs = model(frames)
             
             # Calculate loss
             loss = criterion(outputs, targets)
@@ -273,10 +257,9 @@ def load_checkpoint(model, optimizer, scheduler, model_path, device):
     print(f"Resumed from epoch {checkpoint['epoch']}")
     return model, optimizer, scheduler, start_epoch, metrics
 
-# In train_model function in train.py
-def train_model(model_name, model, train_loader, val_loader, num_epochs=None, 
+def train_model(model_name, model, train_loader, val_loader, num_epochs=30, 
                 device=torch.device("cuda"), output_dir="./output", 
-                patience=7, resume_from=None, grad_clip=None, **kwargs):
+                patience=7, resume_from=None, grad_clip=1.0, optimizer=None, plot_frequency=5):
     """
     Train a model and save checkpoints with early stopping and AUC-ROC metrics
     
@@ -285,24 +268,17 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         model: PyTorch model to train
         train_loader: DataLoader for training data
         val_loader: DataLoader for validation data
-        num_epochs: Number of training epochs (default: from hyperparameters)
+        num_epochs: Number of training epochs
         device: Device to use for training
         output_dir: Directory to save model checkpoints and logs
         patience: Number of epochs with no improvement after which training will be stopped
         resume_from: Path to checkpoint to resume training from (None for starting from scratch)
         grad_clip: Value for gradient clipping (None to disable)
-        **kwargs: Additional parameters for optimizer configuration
+        optimizer: Custom optimizer (None to use default Adam optimizer)
         
     Returns:
         Trained model
     """
-    # Import hyperparameters
-    from hyperparameters import get_optimizer, get_training_config, MODEL_CONFIGS, NUM_EPOCHS
-    
-    # Use default num_epochs if not specified
-    if num_epochs is None:
-        num_epochs = NUM_EPOCHS
-    
     # Create model directory
     model_dir = os.path.join(output_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
@@ -313,28 +289,9 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
     # Set up criterion and optimizer
     criterion = nn.CrossEntropyLoss()
     
-    # Get training config for this model type
-    try:
-        training_config = get_training_config(model_name)
-        optimizer_name = training_config.get('optimizer', 'adam')
-        default_lr = training_config.get('lr', 0.0001)
-    except ValueError:
-        # Fallback if model not found in training config
-        optimizer_name = 'adam'
-        default_lr = 0.0001
-    
-    # Override with kwargs if provided
-    optimizer_name = kwargs.get('optimizer', optimizer_name)
-    lr = kwargs.get('lr', default_lr)
-    
-    # Create optimizer using the helper function with named parameters
-    optimizer = get_optimizer(
-        model, 
-        model_type=model_name,  # Pass model_name as model_type
-        optimizer_name=optimizer_name,
-        lr=lr,
-        **kwargs
-    )
+    # Use provided optimizer or create default one
+    if optimizer is None:
+        optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
     
     # Set up learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -356,7 +313,7 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
     )
     
     # Initialize early stopping
-    early_stopping = EarlyStopping(patience=patience, verbose=True, mode='max')
+    early_stopping = EarlyStopping(patience=patience, verbose=True, mode='min')
     
     # Track best model
     best_auc = 0.0
@@ -403,7 +360,7 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         })
         
         # Plot ROC and PR curves
-        if epoch % 5 == 0 or epoch == num_epochs - 1:  # Every 5 epochs or last epoch
+        if epoch % plot_frequency == 0 or epoch == num_epochs - 1:  # Every plot_frequency epochs or last epoch
             plot_roc_curve(
                 val_metrics['fpr'], val_metrics['tpr'], roc_auc, 
                 epoch + 1, output_dir, model_name
@@ -426,7 +383,7 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         )
         
         # Check for early stopping based on AUC-ROC
-        if early_stopping(roc_auc):
+        if early_stopping(val_loss):
             print(f"Early stopping triggered after epoch {epoch+1}")
             break
         
@@ -441,48 +398,49 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         # Clear CUDA cache after each epoch to prevent memory fragmentation
         clear_cuda_memory()
     
-        if os.path.exists(best_model_path):
-            checkpoint = torch.load(best_model_path, map_location=device)
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
-        
-        return model
+    # Load best model weights
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded best model with AUC-ROC: {best_auc:.4f}")
     
+    return model
+
 
     
-def clear_cuda_memory():
-    """Clear CUDA cache to prevent memory issues between model training"""
-    import torch
-    import gc
     
-    # Clear PyTorch cache
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # Run garbage collector
-    gc.collect()
-    
-    
-def load_checkpoint(model, checkpoint_path, device=None):
+def load_checkpoint(model, optimizer, scheduler, checkpoint_path, device=None):
     """
     Load model weights from a checkpoint file
     
     Args:
         model: PyTorch model to load weights into
+        optimizer: Optimizer to load state into
+        scheduler: Learning rate scheduler to load state into
         checkpoint_path: Path to the checkpoint file
         device: Device to load the model to (optional)
         
     Returns:
-        Loaded model
+        Tuple of (model, optimizer, scheduler, epoch, metrics)
     """
     if device is None:
         device = next(model.parameters()).device
-        
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
     
-    print(f"Loaded checkpoint from {checkpoint_path}")
-    return model
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint {checkpoint_path} not found. Starting from scratch.")
+        return model, optimizer, scheduler, 0, {}
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    if 'optimizer_state_dict' in checkpoint and optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    start_epoch = checkpoint.get('epoch', 0)
+    metrics = checkpoint.get('metrics', {})
+    
+    print(f"Loaded checkpoint from {checkpoint_path}, epoch {start_epoch}")
+    return model, optimizer, scheduler, start_epoch, metrics

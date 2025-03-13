@@ -55,21 +55,15 @@ def train_simplified_edtnn(model, train_loader, val_loader, device, num_epochs=1
         total = 0
         
         for batch in tqdm(train_loader, desc="Training"):
-            # Handle different input types
-            if model.use_pose and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            else:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
+            # Get frames and labels
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
             
             # Zero gradients
             optimizer.zero_grad()
             
             # Forward pass
-            outputs = model(inputs)
+            outputs = model(frames)
             
             # Compute loss
             loss = criterion(outputs, targets, model.entangled_layer)
@@ -98,18 +92,12 @@ def train_simplified_edtnn(model, train_loader, val_loader, device, num_epochs=1
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validation"):
-                # Handle different input types
-                if model.use_pose and len(batch) == 3:  # Video + Pose + Label
-                    frames, pose, targets = batch
-                    frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                    inputs = (frames, pose)
-                else:  # Video + Label
-                    frames, targets = batch
-                    frames, targets = frames.to(device), targets.to(device)
-                    inputs = frames
+                # Get frames and labels
+                frames, targets = batch
+                frames, targets = frames.to(device), targets.to(device)
                 
                 # Forward pass
-                outputs = model(inputs)
+                outputs = model(frames)
                 
                 # Compute loss
                 loss = criterion(outputs, targets, model.entangled_layer)
@@ -161,7 +149,7 @@ def train_simplified_edtnn(model, train_loader, val_loader, device, num_epochs=1
 def run_simplified_search(train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
                         edtnn_params, rf_params, if_params, ensemble_params,
                         batch_size=8, num_workers=4, device=torch.device("cuda"),
-                        output_dir="./simplified_search", pose_dir=None, max_edtnn_epochs=10):
+                        output_dir="./simplified_search", max_edtnn_epochs=10):
     """
     Run simplified hyperparameter search by training and evaluating one configuration.
     """
@@ -172,7 +160,6 @@ def run_simplified_search(train_paths, train_labels, val_paths, val_labels, test
         train_paths, train_labels,
         val_paths, val_labels,
         test_paths, test_labels,
-        pose_dir=pose_dir,
         batch_size=batch_size,
         num_workers=num_workers,
         model_type='3d_cnn'
@@ -186,7 +173,7 @@ def run_simplified_search(train_paths, train_labels, val_paths, val_labels, test
         node_density=edtnn_params.get('node_density', 64),
         features_per_node=edtnn_params.get('features_per_node', 16),
         collapse_method=edtnn_params.get('collapse_method', 'entropy'),
-        use_pose=edtnn_params.get('use_pose', pose_dir is not None)
+        pretrained=True
     ).to(device)
     
     print("Training ED-TNN model...")
@@ -280,7 +267,7 @@ def run_simplified_search(train_paths, train_labels, val_paths, val_labels, test
 
 def incremental_search(train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
                     device=torch.device("cuda"), output_dir="./incremental_search",
-                    pose_dir=None, batch_size=8, num_workers=4, max_edtnn_epochs=10):
+                    batch_size=8, num_workers=4, max_edtnn_epochs=10):
     """
     Run incremental hyperparameter search instead of a full grid search.
     This approach starts with a base configuration and then iteratively improves each component.
@@ -295,7 +282,6 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
             'features_per_node': 16,
             'learning_rate': 0.0001,
             'resonance_weight': 0.1,
-            'use_pose': pose_dir is not None,
             'num_classes': 2,
             'collapse_method': 'entropy'
         },
@@ -325,7 +311,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
         train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
         base_config['edtnn'], base_config['rf'], base_config['if'], base_config['ensemble'],
         batch_size=batch_size, num_workers=num_workers, device=device,
-        output_dir=os.path.join(output_dir, "01_base"), pose_dir=pose_dir,
+        output_dir=os.path.join(output_dir, "01_base"),
         max_edtnn_epochs=max_edtnn_epochs
     )
     
@@ -352,7 +338,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
             train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
             edtnn_params, best_config['rf'], best_config['if'], best_config['ensemble'],
             batch_size=batch_size, num_workers=num_workers, device=device,
-            output_dir=os.path.join(output_dir, f"02_knot_{knot_type}"), pose_dir=pose_dir,
+            output_dir=os.path.join(output_dir, f"02_knot_{knot_type}"),
             max_edtnn_epochs=max_edtnn_epochs
         )
         
@@ -379,7 +365,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
             train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
             edtnn_params, best_config['rf'], best_config['if'], best_config['ensemble'],
             batch_size=batch_size, num_workers=num_workers, device=device,
-            output_dir=os.path.join(output_dir, f"03_density_{node_density}"), pose_dir=pose_dir,
+            output_dir=os.path.join(output_dir, f"03_density_{node_density}"),
             max_edtnn_epochs=max_edtnn_epochs
         )
         
@@ -409,7 +395,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
             train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
             best_config['edtnn'], rf_params, best_config['if'], best_config['ensemble'],
             batch_size=batch_size, num_workers=num_workers, device=device,
-            output_dir=os.path.join(output_dir, f"04_rf_est_{n_estimators}"), pose_dir=pose_dir,
+            output_dir=os.path.join(output_dir, f"04_rf_est_{n_estimators}"),
             max_edtnn_epochs=max_edtnn_epochs
         )
         
@@ -440,7 +426,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
             train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
             best_config['edtnn'], best_config['rf'], best_config['if'], ensemble_params,
             batch_size=batch_size, num_workers=num_workers, device=device,
-            output_dir=os.path.join(output_dir, f"05_weights_{edtnn_weight}_{rf_weight}"), pose_dir=pose_dir,
+            output_dir=os.path.join(output_dir, f"05_weights_{edtnn_weight}_{rf_weight}"),
             max_edtnn_epochs=max_edtnn_epochs
         )
         
@@ -456,7 +442,7 @@ def incremental_search(train_paths, train_labels, val_paths, val_labels, test_pa
         train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
         best_config['edtnn'], best_config['rf'], best_config['if'], best_config['ensemble'],
         batch_size=batch_size, num_workers=num_workers, device=device,
-        output_dir=os.path.join(output_dir, "06_final_best"), pose_dir=pose_dir,
+        output_dir=os.path.join(output_dir, "06_final_best"),
         max_edtnn_epochs=max_edtnn_epochs*2  # Double epochs for final training
     )
     
@@ -476,8 +462,6 @@ def main():
     parser = argparse.ArgumentParser(description="Simplified Hyperparameter Search for Hybrid ED-TNN Ensemble")
     parser.add_argument("--data_dir", type=str, default="./Data/Processed/standardized",
                       help="Directory containing videos")
-    parser.add_argument("--pose_dir", type=str, default=None,
-                      help="Directory containing pose keypoints (optional)")
     parser.add_argument("--output_dir", type=str, default="./incremental_search",
                       help="Directory to save results")
     parser.add_argument("--batch_size", type=int, default=8,
@@ -518,7 +502,6 @@ def main():
         test_paths, test_labels,
         device=device,
         output_dir=args.output_dir,
-        pose_dir=args.pose_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         max_edtnn_epochs=args.max_edtnn_epochs

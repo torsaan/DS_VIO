@@ -10,7 +10,7 @@ import json
 
 def evaluate_model(model, test_loader, criterion, device):
     """
-    Evaluate a single model on test dataset
+    Evaluate a single model on test dataset - Optimized version
     
     Args:
         model: PyTorch model to evaluate
@@ -25,26 +25,24 @@ def evaluate_model(model, test_loader, criterion, device):
     test_loss = 0.0
     correct = 0
     total = 0
-    all_preds = []
-    all_targets = []
-    all_probs = []
     
+    # Pre-allocate memory for predictions and targets if dataset size is known
+    num_samples = len(test_loader.dataset)
+    all_preds = torch.zeros(num_samples, dtype=torch.long)
+    all_targets = torch.zeros(num_samples, dtype=torch.long)
+    all_probs = torch.zeros(num_samples, 2)  # Assuming binary classification
+    
+    start_idx = 0
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Testing"):
-            # Handle different input types (with or without pose data)
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            # Get frames and labels
+            frames, targets = batch
+            batch_size = targets.size(0)
+            frames = frames.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
             
             # Forward pass
-            outputs = model(inputs)
+            outputs = model(frames)
             
             # Calculate loss
             loss = criterion(outputs, targets)
@@ -53,49 +51,65 @@ def evaluate_model(model, test_loader, criterion, device):
             probs = torch.nn.functional.softmax(outputs, dim=1)
             
             # Update statistics
-            test_loss += loss.item() * targets.size(0)
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            test_loss += loss.item() * batch_size
+            _, predicted = torch.max(outputs, 1)
+            total += batch_size
+            correct += (predicted == targets).sum().item()
             
-            # Store predictions and targets for metrics
-            all_preds.extend(predicted.cpu().numpy())
-            all_targets.extend(targets.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+            # Store predictions and targets in pre-allocated tensors
+            end_idx = start_idx + batch_size
+            all_preds[start_idx:end_idx] = predicted.cpu()
+            all_targets[start_idx:end_idx] = targets.cpu()
+            all_probs[start_idx:end_idx] = probs.cpu()
+            
+            start_idx = end_idx
     
     # Calculate test metrics
     test_loss = test_loss / total
     test_acc = 100. * correct / total
     
-    return test_loss, test_acc, np.array(all_preds), np.array(all_targets), np.array(all_probs)
+    # Convert to numpy arrays only once at the end
+    return test_loss, test_acc, all_preds.numpy(), all_targets.numpy(), all_probs.numpy()
 
 def generate_metrics_report(all_preds, all_targets, output_path=None):
     """Generate classification metrics report and optionally save to file"""
-    # Calculate metrics
-    report = classification_report(
-        all_targets, all_preds, 
-        target_names=["NonViolence", "Violence"],
+    # Calculate metrics once to avoid redundant computation
+    target_names = ["NonViolence", "Violence"]
+    
+    # Calculate confusion matrix first (more efficient)
+    cm = confusion_matrix(all_targets, all_preds)
+    
+    # Generate classification report once
+    report_str = classification_report(
+        all_targets, all_preds,
+        target_names=target_names
+    )
+    
+    # Get dict version for JSON output
+    report_dict = classification_report(
+        all_targets, all_preds,
+        target_names=target_names,
         output_dict=True
     )
     
-    # Print report
+    # Print reports
     print("\nClassification Report:")
-    print(classification_report(
-        all_targets, all_preds, 
-        target_names=["NonViolence", "Violence"]
-    ))
+    print(report_str)
     
-    # Print confusion matrix
-    cm = confusion_matrix(all_targets, all_preds)
     print("\nConfusion Matrix:")
     print(cm)
     
     # Save to file if output path provided
     if output_path:
-        with open(output_path, 'w') as f:
-            json.dump(report, f, indent=4)
+        # Use a more efficient approach for file writing
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'w') as f:
+                json.dump(report_dict, f, indent=4)
+        except (IOError, OSError) as e:
+            print(f"Warning: Could not save metrics to {output_path}: {e}")
     
-    return report, cm
+    return report_dict, cm
 
 def plot_confusion_matrix(cm, output_path=None):
     """Plot confusion matrix and optionally save to file"""
@@ -129,17 +143,22 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
     Returns:
         Dictionary of evaluation results
     """
+    # Create output directory once at the beginning
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize shared objects
     criterion = torch.nn.CrossEntropyLoss()
     results = {}
+    
+    # Track model performance for easy comparison
+    model_accuracies = []
     
     for model_name, model in models_dict.items():
         print(f"\n{'='*20} Evaluating {model_name} {'='*20}")
         
-        # Make sure model is in evaluation mode
-        model.eval()
-        
-        # Get test loader
+        # Get test loader and ensure model is in eval mode
         test_loader = test_loaders[model_name]
+        model.eval()
         
         # Evaluate model
         test_loss, test_acc, all_preds, all_targets, all_probs = evaluate_model(
@@ -163,6 +182,7 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
         )
         
         # Store results
+        model_accuracies.append((model_name, test_acc))
         results[model_name] = {
             'test_loss': test_loss,
             'test_accuracy': test_acc,
@@ -173,32 +193,35 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
             'confusion_matrix': cm.tolist()
         }
         
+        # Display immediate results
         print(f"Test Loss: {test_loss:.4f}")
         print(f"Test Accuracy: {test_acc:.2f}%")
     
-    # Compare all models
+    # Print model comparison table
+    model_accuracies.sort(key=lambda x: x[1], reverse=True)
     print("\n" + "="*20 + " Model Comparison " + "="*20)
     print("{:<15} {:<10}".format("Model", "Accuracy"))
     print("-" * 25)
     
-    for model_name, result in results.items():
-        print("{:<15} {:<10.2f}%".format(model_name, result['test_accuracy']))
+    for model_name, acc in model_accuracies:
+        print("{:<15} {:<10.2f}%".format(model_name, acc))
     
-    # Find best model
-    best_model = max(results.items(), key=lambda x: x[1]['test_accuracy'])
-    print(f"\nBest model: {best_model[0]} with accuracy {best_model[1]['test_accuracy']:.2f}%")
+    # Find best model (already sorted)
+    best_model_name, best_acc = model_accuracies[0]
+    print(f"\nBest model: {best_model_name} with accuracy {best_acc:.2f}%")
     
-    # Save results summary
-    with open(os.path.join(output_dir, 'evaluation_summary.json'), 'w') as f:
-        # Filter out numpy arrays from results
-        summary = {
-            model_name: {
-                k: v for k, v in model_results.items() 
-                if k not in ['predictions', 'targets', 'probabilities']
-            }
-            for model_name, model_results in results.items()
-        }
-        json.dump(summary, f, indent=4)
+    # Save results summary - avoid redundant key lookup and list comprehension
+    summary = {}
+    for model_name, model_results in results.items():
+        summary[model_name] = {k: v for k, v in model_results.items() 
+                              if k not in ['predictions', 'targets', 'probabilities']}
+    
+    # Write json with error handling
+    try:
+        with open(os.path.join(output_dir, 'evaluation_summary.json'), 'w') as f:
+            json.dump(summary, f, indent=4)
+    except IOError as e:
+        print(f"Warning: Failed to write evaluation summary: {e}")
     
     return results
 
@@ -215,6 +238,8 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
     Returns:
         Dictionary with ensemble results
     """
+    os.makedirs(output_dir, exist_ok=True)
+    
     all_model_preds = []
     all_model_probs = []
     targets = None
@@ -225,79 +250,88 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         
         model.eval()
         test_loader = test_loaders[model_name]
-        preds = []
-        probs = []
         
+        # Pre-allocate memory for predictions and probabilities
+        num_samples = len(test_loader.dataset)
+        model_preds = np.zeros(num_samples, dtype=np.int64)
+        model_probs = np.zeros((num_samples, 2), dtype=np.float32)  # Assuming binary classification
+        
+        # Pre-allocate targets array if not yet done
+        if targets is None:
+            targets = np.zeros(num_samples, dtype=np.int64)
+        
+        start_idx = 0
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Ensemble - {model_name}"):
-                # Handle different input types (with or without pose data)
-                if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                    frames, pose, batch_targets = batch
-                    frames, pose = frames.to(device), pose.to(device)
-                    inputs = (frames, pose)
-                elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                    frames, batch_targets = batch
-                    frames = frames.to(device)
-                    inputs = frames
-                else:
-                    raise ValueError("Unexpected batch format")
+                # Get frames and labels
+                frames, batch_targets = batch
+                batch_size = batch_targets.size(0)
+                frames = frames.to(device, non_blocking=True)
                 
-                # Store targets from first model only
-                if targets is None:
-                    targets = batch_targets.numpy()
-                elif len(batch_targets) > 0:
-                    targets = np.concatenate([targets, batch_targets.numpy()])
+                # Store targets (only need to do this once)
+                if model_name == list(models_dict.keys())[0]:
+                    end_idx = start_idx + batch_size
+                    targets[start_idx:end_idx] = batch_targets.numpy()
                 
                 # Forward pass
-                outputs = model(inputs)
+                outputs = model(frames)
                 
                 # Get predictions and probabilities
                 batch_probs = torch.nn.functional.softmax(outputs, dim=1)
-                _, batch_preds = outputs.max(1)
+                _, batch_preds = torch.max(outputs, 1)
                 
-                preds.extend(batch_preds.cpu().numpy())
-                probs.extend(batch_probs.cpu().numpy())
+                # Store in pre-allocated arrays
+                end_idx = start_idx + batch_size
+                model_preds[start_idx:end_idx] = batch_preds.cpu().numpy()
+                model_probs[start_idx:end_idx] = batch_probs.cpu().numpy()
+                
+                start_idx = end_idx
         
-        all_model_preds.append(preds)
-        all_model_probs.append(probs)
+        all_model_preds.append(model_preds)
+        all_model_probs.append(model_probs)
     
-    # Convert to numpy arrays
-    all_model_preds = np.array(all_model_preds)
-    all_model_probs = np.array(all_model_probs)
+    # Convert to numpy arrays - already arrays, just stack them
+    all_model_preds = np.stack(all_model_preds)
+    all_model_probs = np.stack(all_model_probs)
     
-    # Majority voting
-    ensemble_preds = np.apply_along_axis(
-        lambda x: np.bincount(x).argmax(), 
-        axis=0, 
-        arr=all_model_preds
-    )
+    # Majority voting - use optimized approach
+    ensemble_preds = np.zeros(num_samples, dtype=np.int64)
+    for i in range(num_samples):
+        ensemble_preds[i] = np.bincount(all_model_preds[:, i]).argmax()
     
     # Average probabilities
     ensemble_probs = np.mean(all_model_probs, axis=0)
     
     # Calculate accuracy
-    ensemble_acc = 100. * (ensemble_preds == targets).mean()
+    correct = (ensemble_preds == targets).sum()
+    ensemble_acc = 100. * correct / num_samples
     
     # Generate report
-    report, cm = generate_metrics_report(
-        ensemble_preds, targets,
-        output_path=os.path.join(output_dir, 'ensemble_metrics.json')
-    )
-    
-    # Plot confusion matrix
-    plot_confusion_matrix(
-        cm,
-        output_path=os.path.join(output_dir, 'ensemble_confusion_matrix.png')
-    )
+    try:
+        report, cm = generate_metrics_report(
+            ensemble_preds, targets,
+            output_path=os.path.join(output_dir, 'ensemble_metrics.json')
+        )
+        
+        # Plot confusion matrix
+        plot_confusion_matrix(
+            cm,
+            output_path=os.path.join(output_dir, 'ensemble_confusion_matrix.png')
+        )
+    except Exception as e:
+        print(f"Warning: Error generating ensemble metrics: {e}")
+        report, cm = {}, np.zeros((2, 2))
     
     # Store results
     ensemble_results = {
-        'accuracy': ensemble_acc,
-        'predictions': ensemble_preds,
-        'targets': targets,
-        'probabilities': ensemble_probs,
+        'accuracy': float(ensemble_acc),  # Convert numpy types to native Python types for JSON serialization
+        'predictions': ensemble_preds.tolist(),
+        'targets': targets.tolist(),
+        'probabilities': ensemble_probs.tolist(),
         'report': report,
         'confusion_matrix': cm.tolist()
     }
+    
+    print(f"Ensemble Accuracy: {ensemble_acc:.2f}%")
     
     return ensemble_results

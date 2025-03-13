@@ -1,4 +1,3 @@
-#main.py
 import os
 import argparse
 import torch
@@ -20,23 +19,17 @@ from Models.model_hybrid import ModelHybrid
 from Models.model_Temporal3DCNN import Temporal3DCNN
 from Models.dl_models import ViolenceLSTM
 
-
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Violence Detection Training")
     parser.add_argument("--data_dir", type=str, default="./Data/Processed/standardized", 
                         help="Directory containing the violence detection dataset")
-    parser.add_argument("--pose_dir", type=str, default="./Data/pose_keypoints", 
-                        help="Directory containing pose keypoints")
     parser.add_argument("--output_dir", type=str, default="./output", 
                         help="Directory to save model outputs")
     parser.add_argument("--batch_size", type=int, default=hp.BATCH_SIZE, 
                         help="Batch size for training")
     parser.add_argument("--num_epochs", type=int, default=hp.NUM_EPOCHS, 
                         help="Number of training epochs")
-    parser.add_argument("--use_pose", action="store_true", 
-                        help="Use pose features in addition to video frames")
     parser.add_argument("--gpu", type=int, default=0, 
                         help="GPU ID to use (-1 for CPU)")
     parser.add_argument("--num_workers", type=int, default=4,
@@ -47,6 +40,8 @@ def parse_args():
                         help="Patience for early stopping (epochs)")
     parser.add_argument("--hp_search", action="store_true",
                         help="Perform hyperparameter search before training")
+    parser.add_argument("--hp_search_epochs", type=int, default=10,
+                        help="Number of epochs for each hyperparameter combination")
     parser.add_argument("--grad_clip", type=float, default=1.0,
                         help="Gradient clipping value (use 0 to disable)")
     parser.add_argument("--pin_memory", action="store_true",
@@ -80,81 +75,54 @@ def setup_device(gpu_id):
     
     return device
 
-def initialize_model(model_type, device, use_pose=False, **overrides):
-    """
-    Initialize model based on model type with hyperparameters from central configuration
+def initialize_model(model_type, device, hyperparams=None):
+    """Initialize model based on model type with optional hyperparameters"""
+    if hyperparams is None:
+        hyperparams = {}
     
-    Args:
-        model_type: Type of model to initialize
-        device: Device to use (CPU or GPU)
-        use_pose: Whether to use pose data
-        **overrides: Any hyperparameters to override defaults
-        
-    Returns:
-        Initialized PyTorch model on the specified device
-    """
-    # Import the configuration function
-    from hyperparameters import get_model_config
+    # Set default values for required parameters
+    required_params = {
+        'num_classes': 2,
+        'use_pose': False
+    }
     
-    # Get model configuration with any overrides
-    config = get_model_config(model_type, **overrides)
+    # Merge required params with provided hyperparams, ensuring no pose data
+    model_params = {**required_params, **hyperparams}
+    model_params['use_pose'] = False  # Always set to False
     
-    # Add use_pose only for models that support it
-    if use_pose and model_type in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
-        config['use_pose'] = use_pose
-    elif 'use_pose' in config and model_type not in ['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d']:
-        # Remove use_pose from models that don't support it
-        config.pop('use_pose')
-    
-    # Initialize the appropriate model with the config
     if model_type == '3d_cnn':
-        from Models.model_3dcnn import Model3DCNN
-        model = Model3DCNN(**config).to(device)
+        model = Model3DCNN(**model_params).to(device)
         
     elif model_type == '2d_cnn_lstm':
-        from Models.model_2dcnn_lstm import Model2DCNNLSTM
-        model = Model2DCNNLSTM(**config).to(device)
+        model = Model2DCNNLSTM(**model_params).to(device)
         
     elif model_type == 'transformer':
-        from Models.model_transformer import VideoTransformer
-        model = VideoTransformer(**config).to(device)
+        model = VideoTransformer(**model_params).to(device)
         
     elif model_type == 'i3d':
-        from Models.model_i3d import TransferLearningI3D
-        model = TransferLearningI3D(**config).to(device)
+        model = TransferLearningI3D(**model_params).to(device)
         
     elif model_type == 'simple_cnn':
-        from Models.model_simplecnn import SimpleCNN
-        model = SimpleCNN(**config).to(device)
+        model = SimpleCNN(**model_params).to(device)
         
     elif model_type == 'temporal_3d_cnn':
-        from Models.model_Temporal3DCNN import Temporal3DCNN
-        model = Temporal3DCNN(**config).to(device)
+        model = Temporal3DCNN(**model_params).to(device)
         
-    # New models
     elif model_type == 'slowfast':
-        from Models.model_slowfast import SlowFastNetwork
-        model = SlowFastNetwork(**config).to(device)
+        model = SlowFastNetwork(**model_params).to(device)
         
     elif model_type == 'r2plus1d':
-        from Models.model_r2plus1d import R2Plus1DNet
-        model = R2Plus1DNet(**config).to(device)
+        model = R2Plus1DNet(**model_params).to(device)
         
     elif model_type == 'two_stream':
-        from Models.model_two_stream import TwoStreamNetwork
-        model = TwoStreamNetwork(**config).to(device)
+        model = TwoStreamNetwork(**model_params).to(device)
         
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
-    # Print model configuration if verbose logging is enabled
-    print(f"Initialized {model_type} with configuration:")
-    for key, value in config.items():
-        print(f"  {key}: {value}")
-    
     return model
 
-def get_hyperparameters(model_type, use_pose=False):
+def get_hyperparameters(model_type):
     """Get hyperparameters for a specific model type"""
     if model_type == '3d_cnn':
         return {
@@ -168,7 +136,6 @@ def get_hyperparameters(model_type, use_pose=False):
             'lstm_hidden_size': 512,
             'lstm_num_layers': 2,
             'dropout_prob': 0.5,
-            'use_pose': use_pose,
             'pretrained': True
         }
     elif model_type == 'transformer':
@@ -177,17 +144,15 @@ def get_hyperparameters(model_type, use_pose=False):
             'embed_dim': 512,
             'num_heads': 8,
             'num_layers': 4,
-            'dropout': 0.1,
-            'use_pose': use_pose
+            'dropout': 0.1
         }
     elif model_type == 'i3d':
         return {
             'num_classes': 2,
             'dropout_prob': 0.5,
-            'use_pose': use_pose,
             'pretrained': True
         }
-    # Add parameters for the new models
+    # Parameters for the new models
     elif model_type == 'slowfast':
         return {
             'num_classes': 2,
@@ -224,10 +189,6 @@ def get_hyperparameters(model_type, use_pose=False):
     else:
         return {'num_classes': 2}
     
-    
-    
-    
-    
 def main():
     # Parse arguments
     args = parse_args()
@@ -254,15 +215,11 @@ def main():
     for model_type in args.model_types:
         print(f"\n{'='*20} Setting up {model_type} {'='*20}")
         
-        # Only use pose_dir if use_pose flag is True; otherwise, set to None.
-        current_pose_dir = args.pose_dir if args.use_pose else None
-
-        # Get data loaders for this model type using current_pose_dir
+        # Get data loaders for this model type
         train_loader, val_loader, test_loader = get_dataloaders(
             train_paths, train_labels, 
             val_paths, val_labels, 
             test_paths, test_labels,
-            current_pose_dir,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             model_type=model_type,
@@ -285,33 +242,74 @@ def main():
                 model_class = VideoTransformer
             elif model_type == 'i3d':
                 model_class = TransferLearningI3D
+            elif model_type == 'slowfast':
+                model_class = SlowFastNetwork
+            elif model_type == 'r2plus1d':
+                model_class = R2Plus1DNet
+            elif model_type == 'two_stream':
+                model_class = TwoStreamNetwork
+            elif model_type == 'simple_cnn':
+                model_class = SimpleCNN
+            elif model_type == 'temporal_3d_cnn':
+                model_class = Temporal3DCNN
             
             if model_class is not None:
+                # Limit search data for faster execution
+                subset_size = len(train_paths) // 4  # Use 25% of data for search
+                search_train_paths = train_paths[:subset_size]
+                search_train_labels = train_labels[:subset_size]
+                
+                hp_output_dir = os.path.join(args.output_dir, f"hp_search_{model_type}")
+                
                 search_results = get_best_hyperparameters(
                     model_class,
-                    train_paths[:len(train_paths)//4],  # Use subset for speed
-                    train_labels[:len(train_labels)//4],
+                    search_train_paths,
+                    search_train_labels,
                     val_paths,
                     val_labels,
-                    output_dir=os.path.join(args.output_dir, f"hp_search_{model_type}")
+                    output_dir=hp_output_dir
                 )
                 
-                hyperparams = search_results['best_params']
+                # Load best parameters for model creation
+                model_hyperparams = {}
+                if 'best_params' in search_results:
+                    model_hyperparams = search_results['best_params']
+                elif 'best_model_params' in search_results:
+                    model_hyperparams = search_results['best_model_params']
+                
+                # Create optimizer parameters if available
+                optimizer_hyperparams = {}
+                if 'best_train_params' in search_results:
+                    optimizer_hyperparams = search_results['best_train_params']
+                
+                hyperparams = model_hyperparams
                 print(f"Best hyperparameters: {hyperparams}")
+                
+                # Check if a final trained model is available to load directly
+                final_model_path = os.path.join(hp_output_dir, f"final_best_{model_class.__name__}.pth")
+                if os.path.exists(final_model_path):
+                    print(f"Loading pre-trained best model from hyperparameter search")
+                    model = initialize_model(model_type, device, hyperparams)
+                    model.load_state_dict(torch.load(final_model_path, map_location=device))
+                    models[model_type] = model
+                    test_loaders[model_type] = test_loader
+                    
+                    # Skip to next model type
+                    continue
         else:
             # Use default hyperparameters
-            hyperparams = get_hyperparameters(model_type, args.use_pose)
+            hyperparams = get_hyperparameters(model_type)
         
         # Initialize model
-        # First, create a copy of hyperparams
-            model_params = hyperparams.copy()
-
-            # Remove use_pose from the hyperparams if it exists
-            if 'use_pose' in model_params:
-                model_params.pop('use_pose')
-
-            # Initialize model with correct arguments
-            model = initialize_model(model_type, device, args.use_pose, **model_params)
+        model = initialize_model(model_type, device, hyperparams)
+        
+        # Create optimizer with best parameters if available
+        optimizer = None
+        if args.hp_search and 'optimizer_hyperparams' in locals() and optimizer_hyperparams:
+            import torch.optim as optim
+            lr = optimizer_hyperparams.get('learning_rate', 0.0001)
+            weight_decay = optimizer_hyperparams.get('weight_decay', 1e-5)
+            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Setup checkpoint path for resuming
         checkpoint_path = None
@@ -344,7 +342,8 @@ def main():
             output_dir=args.output_dir,
             patience=args.early_stopping,
             resume_from=checkpoint_path,
-            grad_clip=grad_clip
+            grad_clip=grad_clip,
+            optimizer=optimizer
         )
         
         models[model_type] = trained_model
@@ -364,8 +363,9 @@ def main():
         
         # Log ensemble results
         print(f"Ensemble accuracy: {ensemble_results['accuracy']:.2f}%")
-        print(f"Ensemble ROC AUC: {ensemble_results['roc_auc']:.4f}")
-        print(f"Ensemble PR AUC: {ensemble_results['pr_auc']:.4f}")
+        
+        if 'auc' in ensemble_results:
+            print(f"Ensemble AUC: {ensemble_results['auc']:.4f}")
     
     print("\nTraining and evaluation completed!")
     

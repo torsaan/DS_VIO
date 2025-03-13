@@ -64,18 +64,12 @@ class FeatureExtractor:
         
         with torch.no_grad():
             for batch in tqdm(loader, desc=f"Extracting {self.layer_name} features"):
-                # Handle different input types (with or without pose data)
-                if self.model.use_pose and len(batch) == 3:  # Video + Pose + Label
-                    frames, pose, targets = batch
-                    frames, pose = frames.to(device), pose.to(device)
-                    inputs = (frames, pose)
-                else:  # Video + Label
-                    frames, targets = batch
-                    frames = frames.to(device)
-                    inputs = frames
+                # Get video frames and labels
+                frames, targets = batch
+                frames = frames.to(device)
                 
                 # Forward pass to trigger the hook
-                self.model(inputs)
+                self.model(frames)
                 
                 # Get the features from the hook
                 batch_features = self.features.cpu().numpy()
@@ -173,7 +167,6 @@ class HybridEDTNNEnsemble:
         ensemble_probs = self.edtnn_weight * edtnn_probs + self.rf_weight * rf_probs
         ensemble_preds = np.argmax(ensemble_probs, axis=1)
         
-        # Calculate metrics
         accuracy = accuracy_score(val_labels, ensemble_preds)
         try:
             auc = roc_auc_score(val_labels, ensemble_probs[:, 1])
@@ -281,18 +274,12 @@ class HybridEDTNNEnsemble:
         
         with torch.no_grad():
             for batch in tqdm(loader, desc="Getting ED-TNN predictions"):
-                # Handle different input types (with or without pose data)
-                if self.edtnn_model.use_pose and len(batch) == 3:  # Video + Pose + Label
-                    frames, pose, _ = batch
-                    frames, pose = frames.to(self.device), pose.to(self.device)
-                    inputs = (frames, pose)
-                else:  # Video + Label
-                    frames, _ = batch
-                    frames = frames.to(self.device)
-                    inputs = frames
+                # Get video frames
+                frames, _ = batch
+                frames = frames.to(self.device)
                 
                 # Forward pass
-                outputs = self.edtnn_model(inputs)
+                outputs = self.edtnn_model(frames)
                 probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()
                 all_probs.extend(probs)
         
