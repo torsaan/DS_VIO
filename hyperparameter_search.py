@@ -299,6 +299,23 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
         model_type = 'r2plus1d'
         
+        
+    elif model_class.__name__ == 'ViolenceCNNLSTM':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'lstm_hidden_size': [256, 512],
+            'num_layers': [1, 2, 3],
+            'dropout': [0.3, 0.5, 0.7],
+            'activation': ['relu', 'gelu'],
+            'learning_rate': [1e-4, 5e-4]
+        }
+        
+        base_params = {
+            'num_classes': 2
+        }
+    
+        model_type = 'cnn_lstm'
+        
     elif model_class.__name__ == 'TwoStreamNetwork':
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification

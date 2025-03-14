@@ -18,7 +18,7 @@ from Models.model_r2plus1d import R2Plus1DNet
 from Models.model_simplecnn import SimpleCNN
 from Models.model_hybrid import ModelHybrid
 from Models.model_Temporal3DCNN import Temporal3DCNN
-from Models.dl_models import ViolenceLSTM
+from Models.violence_cnn_lstm import ViolenceCNNLSTM
 
 
 
@@ -143,6 +143,11 @@ def initialize_model(model_type, device, use_pose=False, **overrides):
     elif model_type == 'two_stream':
         from Models.model_two_stream import TwoStreamNetwork
         model = TwoStreamNetwork(**config).to(device)
+    
+    elif model_type == 'cnn_lstm':
+        model_params = get_hyperparameters(model_type, use_pose)
+        from Models.violence_cnn_lstm import ViolenceCNNLSTM
+        model = ViolenceCNNLSTM(**config).to(device)
         
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -220,6 +225,14 @@ def get_hyperparameters(model_type, use_pose=False):
     elif model_type == 'temporal_3d_cnn':
         return {
             'num_classes': 2
+        }
+    elif model_type == 'cnn_lstm':
+        return {
+            'num_classes': 2,
+            'lstm_hidden_size': 512,
+            'num_layers': 2,
+            'dropout': 0.5,
+            'activation': 'relu'
         }
     else:
         return {'num_classes': 2}

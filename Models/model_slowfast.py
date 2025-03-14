@@ -1,87 +1,56 @@
-# Models/model_slowfast.py
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision.models.video import r3d_18
 
 class SlowFastNetwork(nn.Module):
     """
-    SlowFast Networks for Video Recognition - Simplified implementation that works with testing
+    Proper SlowFast Network with differentiated temporal resolutions and channel capacities.
+    The slow pathway processes every α-th frame while the fast pathway processes the full frame rate.
+    Fast pathway features are reduced by a factor β before fusion.
     """
-    def __init__(self, num_classes=2, pretrained=True, alpha=8, beta=1/8, 
-                 fusion_places=['res2', 'res3', 'res4', 'res5'], dropout_prob=0.5):
-        """
-        Initialize SlowFast Network
-
-        Args:
-            num_classes: Number of output classes
-            pretrained: Whether to use pretrained weights for the backbone
-            alpha: Speed ratio (not directly used in this implementation)
-            beta: Channel ratio (not directly used in this implementation)
-            fusion_places: Stages where lateral connections would be applied
-            dropout_prob: Dropout probability for final classifier
-        """
+    def __init__(self, num_classes=2, pretrained=True, alpha=8, beta=1/8, dropout_prob=0.5):
         super(SlowFastNetwork, self).__init__()
-        
-        # Create separate models for slow and fast pathways
+        self.alpha = alpha
+        self.beta = beta
+
+        # Slow pathway: processes subsampled frames.
         self.slow_model = r3d_18(pretrained=pretrained)
-        self.fast_model = r3d_18(pretrained=pretrained)
-        
-        # Get feature dimensions
-        self.slow_features = self.slow_model.fc.in_features
-        self.fast_features = self.fast_model.fc.in_features
-        
-        # Remove the final FC layers
+        self.slow_features = self.slow_model.fc.in_features  # e.g., 512
         self.slow_model.fc = nn.Identity()
+
+        # Fast pathway: processes full frame rate.
+        self.fast_model = r3d_18(pretrained=pretrained)
+        self.fast_features = self.fast_model.fc.in_features  # e.g., 512
         self.fast_model.fc = nn.Identity()
-        
-        # Final classifier
+        # Reduce fast features by factor beta.
+        self.fast_reduction = nn.Linear(self.fast_features, int(self.fast_features * beta))
+
+        # Final classifier fuses slow and reduced fast features.
+        fused_dim = self.slow_features + int(self.fast_features * beta)
         self.classifier = nn.Sequential(
-            nn.Linear(self.slow_features + self.fast_features, 512),
+            nn.Linear(fused_dim, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_prob),
             nn.Linear(512, num_classes)
         )
-        
-        # Initialize weights
         self._initialize_weights()
-    
+
     def _initialize_weights(self):
-        """Initialize weights of the classifier"""
         for m in self.classifier.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-    
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
     def forward(self, x):
-        """
-        Forward pass through SlowFast network
-        
-        Args:
-            x: Input tensor of shape [B, C, T, H, W] or [B, T, C, H, W] or tuple
-            
-        Returns:
-            Class logits
-        """
-        # Handle different input types
-        if isinstance(x, tuple):
-            x = x[0]  # Extract frames if given as a tuple
-        
-        # Ensure input is in format [B, C, T, H, W]
-        if x.dim() == 5 and x.shape[1] != 3:
-            # Input is [B, T, C, H, W], permute to [B, C, T, H, W]
-            x = x.permute(0, 2, 1, 3, 4)
-        
-        # Process through slow pathway
-        slow_features = self.slow_model(x)
-        
-        # Process through fast pathway
-        fast_features = self.fast_model(x)
-        
-        # Concatenate features
-        combined_features = torch.cat([slow_features, fast_features], dim=1)
-        
-        # Classification
-        output = self.classifier(combined_features)
-        
-        return output
+        # x: expected shape [B, C, T, H, W]
+        # Slow pathway: use every α-th frame.
+        slow_x = x[:, :, ::self.alpha, :, :]
+        # Fast pathway: use full frame rate.
+        fast_x = x
+        slow_features = self.slow_model(slow_x)  # [B, slow_features]
+        fast_features = self.fast_model(fast_x)  # [B, fast_features]
+        reduced_fast = self.fast_reduction(fast_features)  # [B, fast_features * beta]
+        combined_features = torch.cat([slow_features, reduced_fast], dim=1)
+        out = self.classifier(combined_features)
+        return out

@@ -3,14 +3,13 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-def format_input_tensor(tensor, model_type, use_pose=False):
+def format_input_tensor(tensor, model_type):
     """
     Ensure input tensor is in the correct format for different model types
     
     Args:
         tensor: Input tensor of shape [B, T, C, H, W]
         model_type: The type of model ('3d_cnn', '2d_cnn_lstm', etc.)
-        use_pose: Whether the model uses pose data
         
     Returns:
         Correctly formatted tensor(s) for the given model type
@@ -33,10 +32,10 @@ def format_input_tensor(tensor, model_type, use_pose=False):
         flow_tensor = formatted_tensor[:, :2, :-1]  # [B, 2, T-1, H, W]
         return (formatted_tensor, flow_tensor)
     
-    # Return the tensor or a tuple if the model uses pose
+    # Return the tensor
     return formatted_tensor
 
-def create_fake_batch(batch_size=2, num_frames=16, height=224, width=224, model_type='3d_cnn', use_pose=False):
+def create_fake_batch(batch_size=2, num_frames=16, height=224, width=224, model_type='3d_cnn'):
     """
     Create a fake batch of data for testing models
     
@@ -46,7 +45,6 @@ def create_fake_batch(batch_size=2, num_frames=16, height=224, width=224, model_
         height: Frame height
         width: Frame width
         model_type: Type of model for which to format the data
-        use_pose: Whether to include pose data
         
     Returns:
         Tuple of (inputs, labels) suitable for the specified model
@@ -58,12 +56,7 @@ def create_fake_batch(batch_size=2, num_frames=16, height=224, width=224, model_
     labels = torch.randint(0, 2, (batch_size,))
     
     # Format tensor for the model type
-    if use_pose:
-        # Create random pose keypoints: [B, T, 66] (33 keypoints x 2 coordinates)
-        pose = torch.randn(batch_size, num_frames, 66)
-        inputs = (format_input_tensor(frames, model_type), pose)
-    else:
-        inputs = format_input_tensor(frames, model_type)
+    inputs = format_input_tensor(frames, model_type)
     
     return inputs, labels
 
@@ -103,7 +96,7 @@ def get_model_input_shape(model_type, batch_size=1, num_frames=16, height=224, w
     """
     if model_type in ['3d_cnn', 'i3d', 'slowfast', 'r2plus1d']:
         return f"[{batch_size}, 3, {num_frames}, {height}, {width}] (BCTHW)"
-    elif model_type in ['2d_cnn_lstm', 'transformer']:
+    elif model_type in ['2d_cnn_lstm', 'transformer', 'cnn_lstm']:
         return f"[{batch_size}, {num_frames}, 3, {height}, {width}] (BTCHW)"
     elif model_type == 'two_stream':
         rgb = f"[{batch_size}, 3, {num_frames}, {height}, {width}] (BCTHW)"

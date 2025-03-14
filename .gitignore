@@ -16,3 +16,4 @@
 *.pt
 *.pth
 /hyperparam_search
+*.png
