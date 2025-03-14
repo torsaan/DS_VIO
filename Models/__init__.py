@@ -10,3 +10,4 @@ from .model_slowfast import SlowFastNetwork
 from .model_r2plus1d import R2Plus1DNet  
 from .model_two_stream import TwoStreamNetwork
 from .violence_cnn_lstm import ViolenceCNNLSTM
+import numpy as np
