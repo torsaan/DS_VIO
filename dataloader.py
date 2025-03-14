@@ -272,37 +272,85 @@ def get_transforms(frame_height=224, frame_width=224):
 
 def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
                    test_video_paths, test_labels, pose_dir=None, batch_size=8,
-                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn'):
-    """Create DataLoaders for training, validation, and testing."""
+                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn',
+                   pin_memory=True, persistent_workers=True, prefetch_factor=2):
+    """
+    Create DataLoaders for training, validation, and testing with optimizations.
     
+    Args:
+        train_video_paths, val_video_paths, test_video_paths: Lists of video paths
+        train_labels, val_labels, test_labels: Lists of labels
+        pose_dir: Directory containing pose keypoints
+        batch_size: Batch size
+        num_workers: Number of worker processes for DataLoader
+        target_fps: Target frame rate for sampling
+        num_frames: Number of frames to sample per video
+        model_type: Type of model ('3d_cnn', '2d_cnn_lstm', etc.)
+        pin_memory: Whether to pin memory in DataLoader (speeds up GPU transfers)
+        persistent_workers: Whether to keep worker processes alive between iterations
+        prefetch_factor: Number of batches to prefetch per worker
+        
+    Returns:
+        train_loader, val_loader, test_loader
+    """
     # Get transforms
     train_transform, val_transform = get_transforms()
     
     # Create datasets with fixed frame count
     train_dataset = EnhancedViolenceDataset(
-        train_video_paths, train_labels, pose_dir=None,  # Set pose_dir to None
+        train_video_paths, train_labels, pose_dir=pose_dir,
         transform=train_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=True, model_type=model_type,
         training=True
     )
     
     val_dataset = EnhancedViolenceDataset(
-        val_video_paths, val_labels, pose_dir=None,  # Set pose_dir to None
+        val_video_paths, val_labels, pose_dir=pose_dir,
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
         training=False
     )
     
     test_dataset = EnhancedViolenceDataset(
-        test_video_paths, test_labels, pose_dir=None,  # Set pose_dir to None
+        test_video_paths, test_labels, pose_dir=pose_dir,
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
         training=False
     )
     
-    # Create loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    # Only use persistent_workers if num_workers > 0
+    use_persistent = persistent_workers and num_workers > 0
+    
+    # Create loaders with performance optimizations
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        drop_last=True  # Drop last incomplete batch to ensure consistent batch size
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
+    )
+    
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
+    )
     
     return train_loader, val_loader, test_loader

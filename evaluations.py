@@ -3,14 +3,23 @@ import os
 import numpy as np
 import torch
 from tqdm import tqdm
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import (
+    classification_report, confusion_matrix, 
+    roc_curve, auc, precision_recall_curve, average_precision_score
+)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
+import gc
+
+def clear_cuda_memory():
+    """Explicitly clear CUDA memory to prevent allocation issues"""
+    torch.cuda.empty_cache()
+    gc.collect()
 
 def evaluate_model(model, test_loader, criterion, device):
     """
-    Evaluate a single model on test dataset
+    Evaluate a single model on test dataset with enhanced metrics
     
     Args:
         model: PyTorch model to evaluate
@@ -19,7 +28,7 @@ def evaluate_model(model, test_loader, criterion, device):
         device: Device to use
         
     Returns:
-        test_loss, test_acc, all_preds, all_targets, all_probs
+        test_loss, test_acc, all_preds, all_targets, all_probs, metrics_dict
     """
     model.eval()
     test_loss = 0.0
@@ -67,7 +76,34 @@ def evaluate_model(model, test_loader, criterion, device):
     test_loss = test_loss / total
     test_acc = 100. * correct / total
     
-    return test_loss, test_acc, np.array(all_preds), np.array(all_targets), np.array(all_probs)
+    # Calculate ROC and PR curves
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
+    all_probs = np.array(all_probs)
+    
+    # For binary classification, use the probability of the positive class
+    positive_probs = all_probs[:, 1] if all_probs.shape[1] == 2 else all_probs[:, 0]
+    
+    # Calculate ROC curve
+    fpr, tpr, roc_thresholds = roc_curve(all_targets, positive_probs)
+    roc_auc = auc(fpr, tpr)
+    
+    # Calculate PR curve
+    precision, recall, pr_thresholds = precision_recall_curve(all_targets, positive_probs)
+    pr_auc = average_precision_score(all_targets, positive_probs)
+    
+    metrics_dict = {
+        'test_loss': test_loss,
+        'test_accuracy': test_acc,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc,
+        'fpr': fpr.tolist(),
+        'tpr': tpr.tolist(),
+        'precision': precision.tolist(),
+        'recall': recall.tolist()
+    }
+    
+    return test_loss, test_acc, all_preds, all_targets, all_probs, metrics_dict
 
 def generate_metrics_report(all_preds, all_targets, output_path=None):
     """Generate classification metrics report and optionally save to file"""
@@ -116,9 +152,46 @@ def plot_confusion_matrix(cm, output_path=None):
     else:
         plt.show()
 
+def plot_roc_curve(fpr, tpr, roc_auc, output_path=None, title='Receiver Operating Characteristic'):
+    """Plot ROC curve and optionally save to file"""
+    plt.figure(figsize=(10, 8))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(title)
+    plt.legend(loc="lower right")
+    
+    # Save to file if output path provided
+    if output_path:
+        plt.savefig(output_path, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+def plot_pr_curve(precision, recall, pr_auc, output_path=None, title='Precision-Recall Curve'):
+    """Plot Precision-Recall curve and optionally save to file"""
+    plt.figure(figsize=(10, 8))
+    plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (area = {pr_auc:.2f})')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title(title)
+    plt.legend(loc="upper right")
+    
+    # Save to file if output path provided
+    if output_path:
+        plt.savefig(output_path, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
 def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir="./output"):
     """
-    Evaluate and compare multiple models
+    Evaluate and compare multiple models with enhanced metrics
     
     Args:
         models_dict: Dictionary of models {model_name: model}
@@ -142,7 +215,7 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
         test_loader = test_loaders[model_name]
         
         # Evaluate model
-        test_loss, test_acc, all_preds, all_targets, all_probs = evaluate_model(
+        test_loss, test_acc, all_preds, all_targets, all_probs, metrics_dict = evaluate_model(
             model, test_loader, criterion, device
         )
         
@@ -162,6 +235,20 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
             output_path=os.path.join(model_dir, 'confusion_matrix.png')
         )
         
+        # Plot ROC curve
+        plot_roc_curve(
+            metrics_dict['fpr'], metrics_dict['tpr'], metrics_dict['roc_auc'],
+            output_path=os.path.join(model_dir, 'roc_curve.png'),
+            title=f'{model_name} - ROC Curve'
+        )
+        
+        # Plot PR curve
+        plot_pr_curve(
+            metrics_dict['precision'], metrics_dict['recall'], metrics_dict['pr_auc'],
+            output_path=os.path.join(model_dir, 'pr_curve.png'),
+            title=f'{model_name} - Precision-Recall Curve'
+        )
+        
         # Store results
         results[model_name] = {
             'test_loss': test_loss,
@@ -170,23 +257,35 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
             'targets': all_targets,
             'probabilities': all_probs,
             'report': report,
-            'confusion_matrix': cm.tolist()
+            'confusion_matrix': cm.tolist(),
+            'roc_auc': metrics_dict['roc_auc'],
+            'pr_auc': metrics_dict['pr_auc']
         }
         
         print(f"Test Loss: {test_loss:.4f}")
         print(f"Test Accuracy: {test_acc:.2f}%")
+        print(f"ROC AUC: {metrics_dict['roc_auc']:.4f}")
+        print(f"PR AUC: {metrics_dict['pr_auc']:.4f}")
+        
+        # Clear memory after each model evaluation
+        clear_cuda_memory()
     
     # Compare all models
     print("\n" + "="*20 + " Model Comparison " + "="*20)
-    print("{:<15} {:<10}".format("Model", "Accuracy"))
-    print("-" * 25)
+    print("{:<15} {:<10} {:<10} {:<10}".format("Model", "Accuracy", "ROC AUC", "PR AUC"))
+    print("-" * 45)
     
     for model_name, result in results.items():
-        print("{:<15} {:<10.2f}%".format(model_name, result['test_accuracy']))
+        print("{:<15} {:<10.2f}% {:<10.4f} {:<10.4f}".format(
+            model_name, 
+            result['test_accuracy'], 
+            result['roc_auc'], 
+            result['pr_auc']
+        ))
     
-    # Find best model
-    best_model = max(results.items(), key=lambda x: x[1]['test_accuracy'])
-    print(f"\nBest model: {best_model[0]} with accuracy {best_model[1]['test_accuracy']:.2f}%")
+    # Find best model based on ROC AUC
+    best_model = max(results.items(), key=lambda x: x[1]['roc_auc'])
+    print(f"\nBest model (by ROC AUC): {best_model[0]} with AUC {best_model[1]['roc_auc']:.4f}")
     
     # Save results summary
     with open(os.path.join(output_dir, 'evaluation_summary.json'), 'w') as f:
@@ -196,7 +295,7 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
                 k: v for k, v in model_results.items() 
                 if k not in ['predictions', 'targets', 'probabilities']
             }
-            for model_name, model_results in results.items()
+for model_name, model_results in results.items()
         }
         json.dump(summary, f, indent=4)
     
@@ -204,7 +303,7 @@ def evaluate_and_compare_models(models_dict, test_loaders, device, output_dir=".
 
 def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output"):
     """
-    Create an ensemble of models using majority voting
+    Create an ensemble of models using majority voting and weighted averaging of probabilities
     
     Args:
         models_dict: Dictionary of models {model_name: model}
@@ -215,6 +314,10 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
     Returns:
         Dictionary with ensemble results
     """
+    # Create ensemble directory
+    ensemble_dir = os.path.join(output_dir, 'ensemble')
+    os.makedirs(ensemble_dir, exist_ok=True)
+    
     all_model_preds = []
     all_model_probs = []
     targets = None
@@ -281,13 +384,34 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
     # Generate report
     report, cm = generate_metrics_report(
         ensemble_preds, targets,
-        output_path=os.path.join(output_dir, 'ensemble_metrics.json')
+        output_path=os.path.join(ensemble_dir, 'ensemble_metrics.json')
     )
     
     # Plot confusion matrix
     plot_confusion_matrix(
         cm,
-        output_path=os.path.join(output_dir, 'ensemble_confusion_matrix.png')
+        output_path=os.path.join(ensemble_dir, 'ensemble_confusion_matrix.png')
+    )
+    
+    # Calculate ROC and PR curves for ensemble
+    fpr, tpr, _ = roc_curve(targets, ensemble_probs[:, 1])
+    ensemble_roc_auc = auc(fpr, tpr)
+    
+    precision, recall, _ = precision_recall_curve(targets, ensemble_probs[:, 1])
+    ensemble_pr_auc = average_precision_score(targets, ensemble_probs[:, 1])
+    
+    # Plot ensemble ROC curve
+    plot_roc_curve(
+        fpr, tpr, ensemble_roc_auc,
+        output_path=os.path.join(ensemble_dir, 'ensemble_roc_curve.png'),
+        title='Ensemble Model - ROC Curve'
+    )
+    
+    # Plot ensemble PR curve
+    plot_pr_curve(
+        precision, recall, ensemble_pr_auc,
+        output_path=os.path.join(ensemble_dir, 'ensemble_pr_curve.png'),
+        title='Ensemble Model - Precision-Recall Curve'
     )
     
     # Store results
@@ -297,7 +421,17 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         'targets': targets,
         'probabilities': ensemble_probs,
         'report': report,
-        'confusion_matrix': cm.tolist()
+        'confusion_matrix': cm.tolist(),
+        'roc_auc': ensemble_roc_auc,
+        'pr_auc': ensemble_pr_auc,
+        'fpr': fpr.tolist(),
+        'tpr': tpr.tolist(),
+        'precision': precision.tolist(),
+        'recall': recall.tolist()
     }
+    
+    print(f"Ensemble accuracy: {ensemble_acc:.2f}%")
+    print(f"Ensemble ROC AUC: {ensemble_roc_auc:.4f}")
+    print(f"Ensemble PR AUC: {ensemble_pr_auc:.4f}")
     
     return ensemble_results

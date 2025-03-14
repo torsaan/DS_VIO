@@ -4,7 +4,7 @@ import torch.nn as nn
 from torchvision.models.video import r3d_18
 
 class Model3DCNN(nn.Module):
-    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66):
+    def __init__(self, num_classes=2, use_pose=False, pose_input_size=66, dropout_prob = 0.5, pretrained = True):
         super(Model3DCNN, self).__init__()
         # Load pre-trained 3D ResNet model
         self.backbone = r3d_18(pretrained=True)

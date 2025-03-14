@@ -1,5 +1,0 @@
-Finne ut angående video / bilder til ML og DL . FPS, RES , SAMPLING
-
-    Hvordan kunne bruke ml og dl modeller sammen 
-    Generere Pose data
-    
