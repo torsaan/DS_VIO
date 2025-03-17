@@ -82,14 +82,23 @@ MODEL_CONFIGS = {
         'pretrained': True,
     },
     'simple_cnn': {
-        'num_classes': 2
+        'num_classes': 2,
+        'dropout_prob': 0.5,
+        'use_pose': False
     },
     'temporal_3d_cnn': {
         'num_classes': 2
+    },
+    'cnn_lstm': {
+        'num_classes': 2,
+        'lstm_hidden_size': 512,
+        'num_layers': 2,
+        'dropout': 0.5,
+        'activation': 'relu'
     }
 }
 
-# Separate model configurations from training configurations
+# And also update TRAINING_CONFIGS to include cnn_lstm
 TRAINING_CONFIGS = {
     '3d_cnn': {
         'optimizer': 'adam',
@@ -124,6 +133,10 @@ TRAINING_CONFIGS = {
         'lr': 0.0001
     },
     'temporal_3d_cnn': {
+        'optimizer': 'adam',
+        'lr': 0.0001
+    },
+    'cnn_lstm': {
         'optimizer': 'adam',
         'lr': 0.0001
     }

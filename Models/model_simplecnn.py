@@ -4,11 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SimpleCNN(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=2, dropout_prob=0.5, use_pose=False):
         super(SimpleCNN, self).__init__()
         
-        # First, we need to permute the input to get [batch, channels, frames, height, width]
+        # Ignore use_pose parameter (included for compatibility)
+        self.use_pose = False
         
+        # First, we need to permute the input to get [batch, channels, frames, height, width]
         self.features = nn.Sequential(
             # First convolution block
             nn.Conv3d(3, 16, kernel_size=3, padding=1),
@@ -29,9 +31,19 @@ class SimpleCNN(nn.Module):
             nn.MaxPool3d(kernel_size=2, stride=2),
         )
         
-        # Classifier - will determine size during forward pass
-        self.classifier = None
+        # Global average pooling to reduce dimensions
+        self.global_avg_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        
+        # Fixed classifier with standard dimensions
+        self.classifier = nn.Sequential(
+            nn.Linear(64, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(256, num_classes)
+        )
+        
         self.num_classes = num_classes
+        self.dropout_prob = dropout_prob
     
     def forward(self, x):
         # Input shape is [batch_size, frames, channels, height, width]
@@ -44,20 +56,12 @@ class SimpleCNN(nn.Module):
         x = self.features(x)
         print(f"After features shape: {x.shape}")
         
+        # Global average pooling
+        x = self.global_avg_pool(x)
+        
         # Flatten
         x = x.view(x.size(0), -1)
         print(f"Flattened shape: {x.shape}")
-        
-        # Initialize classifier on first forward pass if not done yet
-        if self.classifier is None:
-            feature_size = x.shape[1]
-            self.classifier = nn.Sequential(
-                nn.Linear(feature_size, 256),
-                nn.ReLU(),
-                nn.Dropout(0.5),
-                nn.Linear(256, self.num_classes)
-            )
-            print(f"Created classifier with input size: {feature_size}")
         
         # Classification
         x = self.classifier(x)

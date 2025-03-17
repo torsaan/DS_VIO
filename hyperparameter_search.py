@@ -15,10 +15,11 @@ from utils.dataprep import prepare_violence_nonviolence_data
 from dataloader import get_dataloaders
 
 
+
 def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                param_grid, base_params=None, device=torch.device("cuda"),
                output_dir="./hyperparam_search", num_epochs=10,
-               batch_size=8, num_workers=4, model_type='3d_cnn'):
+               batch_size=2, num_workers=4, model_type='3d_cnn'):
     """
     Perform grid search for hyperparameter optimization
     
@@ -70,6 +71,9 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         fieldnames=fieldnames
     )
     
+    # Define model parameters vs optimizer parameters
+    optimizer_param_names = ['learning_rate', 'weight_decay', 'momentum', 'beta1', 'beta2']
+    
     # Loop through all parameter combinations
     for i, combination in enumerate(tqdm(param_combinations, desc="Hyperparameter Search")):
         # Clear CUDA memory
@@ -77,8 +81,19 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         
         # Create parameter dictionary for this combination
         params = base_params.copy()
+        
+        # Separate model params from optimizer params
+        model_params = {}
+        optimizer_params = {}
+        
         for name, value in zip(param_names, combination):
-            params[name] = value
+            if name in optimizer_param_names:
+                optimizer_params[name] = value
+            else:
+                model_params[name] = value
+                
+        # Update params with model params
+        params.update(model_params)
         
         # Create model name
         model_name = f"model_{i}"
@@ -103,6 +118,7 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         )
         
         # Train model
+        # Pass optimizer params if they exist
         trained_model = train_model(
             model_name=model_name,
             model=model,
@@ -111,7 +127,8 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
             num_epochs=num_epochs,
             device=device,
             output_dir=output_dir,
-            patience=3  # Use shorter patience for hyperparameter search
+            patience=3,  # Use shorter patience for hyperparameter search
+            **optimizer_params  # Pass optimizer params here
         )
         
         # Evaluate model on validation set
@@ -160,7 +177,7 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
             json.dump({
                 'results': results,
                 'best_params': best_params,
-                'best_auc': best_auc
+                'best_auc': float(best_auc)
             }, f, indent=4)
         
         # Clear memory
@@ -299,7 +316,6 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
         model_type = 'r2plus1d'
         
-        
     elif model_class.__name__ == 'ViolenceCNNLSTM':
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
@@ -332,6 +348,33 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         }
         
         model_type = 'two_stream'
+        
+    # Add SimpleCNN support
+    elif model_class.__name__ == 'SimpleCNN':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'dropout_prob': [0.3, 0.5, 0.7]
+        }
+        
+        base_params = {
+            'num_classes': 2,
+            'use_pose': False
+        }
+        
+        model_type = 'simple_cnn'
+        
+    # Add Temporal3DCNN support
+    elif model_class.__name__ == 'Temporal3DCNN':
+        param_grid = {
+            'num_classes': [2],  # Fixed for binary classification
+            'learning_rate': [1e-4, 5e-4, 1e-3]
+        }
+        
+        base_params = {
+            'num_classes': 2
+        }
+        
+        model_type = 'temporal_3d_cnn'
         
     else:
         raise ValueError(f"Unknown model class: {model_class.__name__}")

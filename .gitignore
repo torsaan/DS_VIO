@@ -17,3 +17,7 @@
 *.pth
 /hyperparam_search
 *.png
+*.json 
+*.log
+*.pyc
+*.joblib

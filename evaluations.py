@@ -320,7 +320,7 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
     
     all_model_preds = []
     all_model_probs = []
-    targets = None
+    all_targets = {}  # Store targets from each model
     
     # Collect predictions from all models
     for model_name, model in models_dict.items():
@@ -330,6 +330,7 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         test_loader = test_loaders[model_name]
         preds = []
         probs = []
+        targets = []
         
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Ensemble - {model_name}"):
@@ -345,11 +346,8 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
                 else:
                     raise ValueError("Unexpected batch format")
                 
-                # Store targets from first model only
-                if targets is None:
-                    targets = batch_targets.numpy()
-                elif len(batch_targets) > 0:
-                    targets = np.concatenate([targets, batch_targets.numpy()])
+                # Store targets
+                targets.extend(batch_targets.cpu().numpy())
                 
                 # Forward pass
                 outputs = model(inputs)
@@ -363,10 +361,26 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         
         all_model_preds.append(preds)
         all_model_probs.append(probs)
+        all_targets[model_name] = targets
+    
+    # Verify all models processed the same number of samples
+    sample_counts = [len(preds) for preds in all_model_preds]
+    if len(set(sample_counts)) > 1:
+        print(f"Warning: Models processed different numbers of samples: {sample_counts}")
+        # Use the shortest length for all arrays
+        min_length = min(sample_counts)
+        all_model_preds = [preds[:min_length] for preds in all_model_preds]
+        all_model_probs = [probs[:min_length] for probs in all_model_probs]
+    
+    # Choose targets from the first model (since they should be the same)
+    targets = list(all_targets.values())[0]
+    if len(targets) > min_length:
+        targets = targets[:min_length]
     
     # Convert to numpy arrays
     all_model_preds = np.array(all_model_preds)
     all_model_probs = np.array(all_model_probs)
+    targets = np.array(targets)
     
     # Majority voting
     ensemble_preds = np.apply_along_axis(
