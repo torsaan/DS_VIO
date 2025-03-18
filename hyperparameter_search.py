@@ -5,7 +5,8 @@ import json
 import torch
 from tqdm import tqdm
 import numpy as np
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
+
 from train import train_model, clear_cuda_memory
 from dataloader import get_dataloaders
 from evaluations import evaluate_model
@@ -13,6 +14,32 @@ import matplotlib.pyplot as plt
 import argparse
 from utils.dataprep import prepare_violence_nonviolence_data
 from dataloader import get_dataloaders
+import torch.cuda.amp as amp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import datetime
+from train import EarlyStopping
+
+from Models.model_simplecnn import SimpleCNN
+from Models.model_2dcnn_lstm import Model2DCNNLSTM
+from Models.model_3dcnn import Model3DCNN
+from Models.model_transformer import VideoTransformer
+from Models.model_slowfast import SlowFastNetwork
+from Models.model_r2plus1d import R2Plus1DNet
+from Models.violence_cnn_lstm import ViolenceCNNLSTM
+from Models.model_two_stream import TwoStreamNetwork
+from Models.model_Temporal3DCNN import Temporal3DCNN
+from Models.model_i3d import TransferLearningI3D    
+from Models.model_hybrid import ModelHybrid
+
+
+import warnings
+
+# Suppress specific deprecation warnings
+warnings.filterwarnings("ignore", message="The parameter 'pretrained' is deprecated")
+warnings.filterwarnings("ignore", message="Arguments other than a weight enum or `None` for 'weights' are deprecated")
+warnings.filterwarnings("ignore", message="The verbose parameter is deprecated")
+warnings.filterwarnings("ignore", message="`torch.cuda.amp.autocast")
 
 
 
@@ -21,23 +48,7 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                output_dir="./hyperparam_search", num_epochs=10,
                batch_size=2, num_workers=4, model_type='3d_cnn'):
     """
-    Perform grid search for hyperparameter optimization
-    
-    Args:
-        model_class: Model class to instantiate
-        train_paths, val_paths: Lists of video paths for training and validation
-        train_labels, val_labels: Lists of labels for training and validation
-        param_grid: Dictionary mapping parameter names to lists of values to try
-        base_params: Dictionary of base parameters for model instantiation
-        device: Device to use for training
-        output_dir: Directory to save results
-        num_epochs: Number of epochs to train each model
-        batch_size: Batch size
-        num_workers: Number of worker processes for DataLoader
-        model_type: Type of model ('3d_cnn', '2d_cnn_lstm', etc.)
-        
-    Returns:
-        Dictionary with best parameters and results
+    Perform grid search for hyperparameter optimization with memory optimizations
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -76,7 +87,7 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
     
     # Loop through all parameter combinations
     for i, combination in enumerate(tqdm(param_combinations, desc="Hyperparameter Search")):
-        # Clear CUDA memory
+        # Clear CUDA memory thoroughly
         clear_cuda_memory()
         
         # Create parameter dictionary for this combination
@@ -104,85 +115,129 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
         param_str = ", ".join([f"{name}={value}" for name, value in zip(param_names, combination)])
         print(f"\nTrying combination {i+1}/{len(param_combinations)}: {param_str}")
         
-        # Create model with current parameters
-        model = model_class(**params).to(device)
-        
-        # Create dataloaders with current batch size
-        train_loader, val_loader, _ = get_dataloaders(
-            train_paths, train_labels, 
-            val_paths, val_labels,
-            val_paths, val_labels,  # Use validation set as test set
-            batch_size=batch_size,
-            num_workers=num_workers,
-            model_type=model_type
-        )
-        
-        # Train model
-        # Pass optimizer params if they exist
-        trained_model = train_model(
-            model_name=model_name,
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            num_epochs=num_epochs,
-            device=device,
-            output_dir=output_dir,
-            patience=3,  # Use shorter patience for hyperparameter search
-            **optimizer_params  # Pass optimizer params here
-        )
-        
-        # Evaluate model on validation set
-        val_loss, val_acc, _, _, all_probs, metrics_dict = evaluate_model(
-            trained_model, val_loader, criterion, device
-        )
-        
-        # Extract evaluation metrics
-        roc_auc = metrics_dict.get('roc_auc', 0)
-        pr_auc = metrics_dict.get('pr_auc', 0)
-        
-        # Save metrics
-        combination_result = {
-            'params': {name: value for name, value in zip(param_names, combination)},
-            'metrics': metrics_dict
-        }
-        results.append(combination_result)
-        
-        # Log results to CSV
-        log_entry = {
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'combination_id': i
-        }
-        
-        # Add parameter values
-        for name, value in zip(param_names, combination):
-            log_entry[name] = value
+        try:
+            # Create model with current parameters
+            model = model_class(**params)
             
-        # Add metrics
-        log_entry['val_loss'] = val_loss
-        log_entry['val_acc'] = val_acc
-        log_entry['roc_auc'] = roc_auc
-        log_entry['pr_auc'] = pr_auc
-        
-        # Write to CSV log
-        logger.log(log_entry)
-        
-        # Check if this is the best model
-        if roc_auc > best_auc:
-            best_auc = roc_auc
-            best_params = combination_result['params']
-            print(f"New best parameters found with AUC {best_auc:.4f}")
-        
-        # Save current results
-        with open(os.path.join(output_dir, 'grid_search_results.json'), 'w') as f:
-            json.dump({
-                'results': results,
-                'best_params': best_params,
-                'best_auc': float(best_auc)
-            }, f, indent=4)
-        
-        # Clear memory
-        del model, trained_model
-        clear_cuda_memory()
+            # Enable model specific memory optimizations
+            if model_type == 'transformer':
+                # For transformer models, enable gradient checkpointing
+                if hasattr(model, 'backbone') and hasattr(model.backbone, 'transformer'):
+                    model.backbone.transformer.gradient_checkpointing_enable()
+                elif hasattr(model, 'temporal_encoder'):
+                    # Enable gradient checkpointing for your custom transformer if it exists
+                    for layer in model.temporal_encoder.layers:
+                        layer.use_checkpoint = True
+            
+            # Move model to device after optimizations
+            model = model.to(device)
+            
+            # Create dataloaders with current batch size but smaller prefetch factor
+            # to reduce memory overhead and dynamic batch sizes for different models
+            adjusted_batch_size = batch_size
+            
+            # Adjust batch size based on model type to prevent OOM
+            if model_type == '3d_cnn':
+                adjusted_batch_size = max(1, batch_size // 2)  # Halve batch size for 3D CNN
+            elif model_type == 'transformer':
+                adjusted_batch_size = max(1, batch_size // 2)  # Halve batch size for transformers
+            
+            train_loader, val_loader, _ = get_dataloaders(
+                train_paths, train_labels, 
+                val_paths, val_labels,
+                val_paths, val_labels,  # Use validation set as test set
+                batch_size=adjusted_batch_size,
+                num_workers=num_workers,
+                prefetch_factor=2,  # Reduce prefetching to save memory
+                pin_memory=True,
+                model_type=model_type
+            )
+            
+            # Train model with mixed precision and memory optimizations
+            trained_model = train_model_with_optimization(
+                model_name=model_name,
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                num_epochs=num_epochs,
+                device=device,
+                output_dir=output_dir,
+                patience=3,  # Use shorter patience for hyperparameter search
+                use_amp=True,  # Enable automatic mixed precision
+                **optimizer_params  # Pass optimizer params here
+            )
+            
+            # Evaluate model on validation set
+            val_loss, val_acc, _, _, all_probs, metrics_dict = evaluate_model_with_optimization(
+                trained_model, val_loader, criterion, device, use_amp=True
+            )
+            
+            # Extract evaluation metrics
+            roc_auc = metrics_dict.get('roc_auc', 0)
+            pr_auc = metrics_dict.get('pr_auc', 0)
+            
+            # Save metrics
+            combination_result = {
+                'params': {name: value for name, value in zip(param_names, combination)},
+                'metrics': metrics_dict
+            }
+            results.append(combination_result)
+            
+            # Log results to CSV
+            log_entry = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'combination_id': i
+            }
+            
+            # Add parameter values
+            for name, value in zip(param_names, combination):
+                log_entry[name] = value
+                
+            # Add metrics
+            log_entry['val_loss'] = val_loss
+            log_entry['val_acc'] = val_acc
+            log_entry['roc_auc'] = roc_auc
+            log_entry['pr_auc'] = pr_auc
+            
+            # Write to CSV log
+            logger.log(log_entry)
+            
+            # Check if this is the best model
+            if roc_auc > best_auc:
+                best_auc = roc_auc
+                best_params = combination_result['params']
+                print(f"New best parameters found with AUC {best_auc:.4f}")
+            
+            # Save current results
+            with open(os.path.join(output_dir, 'grid_search_results.json'), 'w') as f:
+                json.dump({
+                    'results': results,
+                    'best_params': best_params,
+                    'best_auc': float(best_auc)
+                }, f, indent=4)
+                
+        except Exception as e:
+            print(f"Error during hyperparameter search for {model_type}: {str(e)}")
+            # Log error in CSV
+            log_entry = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'combination_id': i
+            }
+            for name, value in zip(param_names, combination):
+                log_entry[name] = value
+            log_entry['val_loss'] = None
+            log_entry['val_acc'] = None
+            log_entry['roc_auc'] = None
+            log_entry['pr_auc'] = None
+            logger.log(log_entry)
+            
+        finally:
+            # Always clear memory
+            if 'model' in locals():
+                del model
+            if 'trained_model' in locals():
+                del trained_model
+            clear_cuda_memory()
     
     # Plot results
     plot_grid_search_results(results, param_names, output_dir)
@@ -195,6 +250,10 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
 
 def plot_grid_search_results(results, param_names, output_dir):
     """Plot grid search results for different parameters"""
+    if not results:
+        print("No valid results to plot")
+        return
+        
     plt.figure(figsize=(15, 10))
     
     for param_name in param_names:
@@ -203,9 +262,17 @@ def plot_grid_search_results(results, param_names, output_dir):
         auc_values = []
         
         for result in results:
+            # Check if this result has valid metrics
+            if 'metrics' not in result or 'roc_auc' not in result['metrics']:
+                continue
+                
             param_values.append(result['params'][param_name])
             auc_values.append(result['metrics']['roc_auc'])
         
+        # Only plot if we have data points
+        if not param_values:
+            continue
+            
         # Create scatter plot
         plt.scatter(param_values, auc_values, label=param_name)
         
@@ -232,6 +299,8 @@ def plot_grid_search_results(results, param_names, output_dir):
     plt.savefig(os.path.join(output_dir, 'grid_search_results.png'))
     plt.close()
 
+
+    
 def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, val_labels, 
                              output_dir="./hyperparam_search"):
     """Example function showing how to use grid search for specific models"""
@@ -357,8 +426,8 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         }
         
         base_params = {
-            'num_classes': 2,
-            'use_pose': False
+            'num_classes': 2
+            # Removed 'use_pose': False
         }
         
         model_type = 'simple_cnn'
@@ -510,7 +579,300 @@ def sequential_hyperparameter_search(model_classes, train_paths, train_labels, v
                 f.write(f"\nBest overall model: {best_model[0]} with AUC {best_model[1]['best_auc']:.4f}\n")
         
         return all_results
+
+
+def train_model_with_optimization(model_name, model, train_loader, val_loader, num_epochs=10, 
+                                device=torch.device("cuda"), output_dir="./output", 
+                                patience=7, resume_from=None, grad_clip=None, use_amp=True, **kwargs):
+    """
+    Train a model with memory optimizations including mixed precision training
+    """
+    # Import hyperparameters
+    from hyperparameters import get_optimizer, get_training_config
     
+    # Create model directory
+    model_dir = os.path.join(output_dir, model_name)
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Set up criterion and optimizer
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    # Get optimizer params with defaults
+    lr = kwargs.get('learning_rate', 0.0001)
+    optimizer_name = kwargs.get('optimizer', 'adam')
+    
+    # Create optimizer
+    optimizer = get_optimizer(
+        model, 
+        model_type=model_name,
+        optimizer_name=optimizer_name,
+        lr=lr,
+        **kwargs
+    )
+    
+    # Set up learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
+    
+    # Initialize early stopping
+    early_stopping = EarlyStopping(patience=patience, verbose=True, mode='max')
+    
+    # Set up gradient scaler for mixed precision
+    scaler = torch.amp.GradScaler(enabled=use_amp)
+    
+    # Training loop
+    best_auc = 0.0
+    for epoch in range(num_epochs):
+        # Train
+        model.train()
+        train_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for batch in train_loader:
+            # Handle different input types
+            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
+                frames, pose, targets = batch
+                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
+                inputs = (frames, pose)
+            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
+                frames, targets = batch
+                frames, targets = frames.to(device), targets.to(device)
+                inputs = frames
+            else:
+                raise ValueError("Unexpected batch format")
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Mixed precision forward pass
+            with amp.autocast(enabled=use_amp):
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+            
+            # Mixed precision backward pass
+            if use_amp:
+                scaler.scale(loss).backward()
+                
+                # Apply gradient clipping if specified
+                if grad_clip is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                
+                # Apply gradient clipping if specified
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                
+                optimizer.step()
+            
+            # Update statistics
+            train_loss += loss.item() * targets.size(0)
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+        
+        # Calculate epoch metrics
+        train_loss = train_loss / total
+        train_acc = 100. * correct / total
+        
+        # Evaluate model on validation set
+        metrics_dict, _, _, all_probs = evaluate_model_with_optimization(
+            model, val_loader, criterion, device, use_amp=True
+        )
+
+        # Extract evaluation metrics
+        val_loss = metrics_dict.get('val_loss', 0)
+        val_acc = metrics_dict.get('val_acc', 0)
+        roc_auc = metrics_dict.get('roc_auc', 0)
+        pr_auc = metrics_dict.get('pr_auc', 0)
+                
+        # Update scheduler
+        scheduler.step(val_loss)
+        
+        # Print epoch summary
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+        print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+        print(f"ROC AUC: {roc_auc:.4f} | PR AUC: {metrics_dict['pr_auc']:.4f}")
+        
+        # Check for early stopping based on AUC-ROC
+        if early_stopping(roc_auc):
+            print(f"Early stopping triggered after epoch {epoch+1}")
+            break
+        
+        # Save best model
+        if roc_auc > best_auc:
+            best_auc = roc_auc
+            # Save model checkpoint
+            checkpoint_path = os.path.join(model_dir, f"{model_name}_best.pth")
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"New best model with AUC-ROC: {best_auc:.4f}")
+    
+    # Load best model for return
+    best_model_path = os.path.join(model_dir, f"{model_name}_best.pth")
+    if os.path.exists(best_model_path):
+        try:
+            # Use map_location to avoid device mismatch issues
+            model.load_state_dict(torch.load(best_model_path, map_location=device))
+        except Exception as e:
+            print(f"Warning: Could not load best model: {e}")
+            # Continue with current model state
+
+def evaluate_model_with_optimization(model, data_loader, criterion, device, use_amp=True):
+    """Evaluate model with memory optimizations including mixed precision"""
+    model.eval()
+    val_loss = 0.0
+    correct = 0
+    total = 0
+    
+    # Process batches in chunks to avoid large memory allocations
+    all_preds = np.array([], dtype=np.int64)
+    all_targets = np.array([], dtype=np.int64)
+    
+    # Get number of classes for proper array initialization
+    try:
+        # Find output dimension of final layer
+        for module in model.modules():
+            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d, torch.nn.Conv3d)):
+                if module.out_features if hasattr(module, 'out_features') else (
+                       module.out_channels if hasattr(module, 'out_channels') else 0):
+                    num_classes = module.out_features if hasattr(module, 'out_features') else module.out_channels
+        
+        if not num_classes:
+            num_classes = 2  # Default to binary if we can't determine
+    except:
+        num_classes = 2  # Default to binary if error occurs
+    
+    # Initialize all_probs with the right shape
+    all_probs = np.array([]).reshape(0, num_classes)
+    
+    
+    with torch.no_grad():
+        for batch in data_loader:
+            # Handle different input types
+            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
+                frames, pose, targets = batch
+                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
+                inputs = (frames, pose)
+            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
+                frames, targets = batch
+                frames, targets = frames.to(device), targets.to(device)
+                inputs = frames
+            else:
+                raise ValueError("Unexpected batch format")
+            
+            # Mixed precision forward pass
+            with amp.autocast(enabled=use_amp):
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+            
+            # Calculate probabilities
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            
+            # Update statistics
+            val_loss += loss.item() * targets.size(0)
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+            
+            # Convert to NumPy arrays
+            batch_preds = predicted.cpu().numpy()
+            batch_targets = targets.cpu().numpy()
+            batch_probs = probs.cpu().numpy()
+            
+            # Append using concatenate (more memory efficient)
+            all_preds = np.concatenate([all_preds, batch_preds])
+            all_targets = np.concatenate([all_targets, batch_targets])
+            all_probs = np.concatenate([all_probs, batch_probs])
+            
+            # Clear CUDA cache periodically if needed
+            if torch.cuda.is_available() and torch.cuda.memory_allocated() > 0.9 * torch.cuda.get_device_properties(device).total_memory:
+                torch.cuda.empty_cache()
+    
+    # Calculate validation metrics
+    val_loss = val_loss / total
+    val_acc = 100. * correct / total
+    
+    # Initialize metrics dictionary with defaults
+    metrics_dict = {
+        'val_loss': val_loss,
+        'val_acc': val_acc,
+        'roc_auc': 0.0, 
+        'pr_auc': 0.0,
+        'fpr': [],
+        'tpr': [],
+        'precision': [],
+        'recall': []
+    }
+    
+    # Calculate AUC metrics only if we have enough data
+    if len(all_targets) > 0 and len(np.unique(all_targets)) > 1:
+        try:
+            # For binary classification, use the probability of the positive class
+            positive_probs = all_probs[:, 1] if all_probs.shape[1] >= 2 else all_probs[:, 0]
+            
+            # Calculate ROC curve
+            fpr, tpr, roc_thresholds = roc_curve(all_targets, positive_probs)
+            roc_auc = auc(fpr, tpr)
+            
+            # Calculate PR curve
+            precision, recall, pr_thresholds = precision_recall_curve(all_targets, positive_probs)
+            pr_auc = average_precision_score(all_targets, positive_probs)
+            
+            # Update metrics dictionary
+            metrics_dict.update({
+                'roc_auc': roc_auc,
+                'pr_auc': pr_auc,
+                'fpr': fpr,
+                'tpr': tpr,
+                'precision': precision,
+                'recall': recall
+            })
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate AUC metrics: {e}")
+    else:
+        print("Warning: Not enough unique classes to calculate AUC metrics")
+    
+    return metrics_dict, all_preds, all_targets, all_probs
+
+
+def clear_cuda_memory():
+    """Clear CUDA memory between runs with better error handling"""
+    if not torch.cuda.is_available():
+        return
+        
+    try:
+        # Get initial memory stats
+        initial_allocated = torch.cuda.memory_allocated() / 1e9
+        initial_reserved = torch.cuda.memory_reserved() / 1e9
+        
+        # Delete any existing tensors
+        import gc
+        gc.collect()
+        
+        # Reset CUDA device completely (more aggressive)
+        torch.cuda.empty_cache()
+        # For extreme cases, can consider:
+        if torch.cuda.memory_allocated() > 0:  # If memory still allocated
+            torch.cuda.synchronize()  # Ensure all CUDA operations are complete
+        
+        # Print memory savings
+        final_allocated = torch.cuda.memory_allocated() / 1e9
+        final_reserved = torch.cuda.memory_reserved() / 1e9
+        
+        print(f"GPU Memory: {initial_allocated:.2f} GB → {final_allocated:.2f} GB allocated, "
+              f"{initial_reserved:.2f} GB → {final_reserved:.2f} GB reserved")
+    except RuntimeError as e:
+        print(f"Warning: Error clearing CUDA memory: {e}")
+        print("Continuing with available memory...")
+
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description="Run sequential hyperparameter search for multiple models")
@@ -522,97 +884,123 @@ def main():
                       help="GPU ID to use (-1 for CPU)")
     parser.add_argument("--num_epochs", type=int, default=10,
                       help="Number of epochs for each trial")
+    parser.add_argument("--batch_size", type=int, default=2,
+                      help="Batch size for training")
     parser.add_argument("--model_types", nargs="+", 
-                      default=['3d_cnn', '2d_cnn_lstm', 'transformer'],
+                      default=['2d_cnn_lstm', '3d_cnn', 'transformer'],
                       help="Model types to search")
+    parser.add_argument("--use_mixed_precision", action="store_true",
+                      help="Use mixed precision training to save memory")
     args = parser.parse_args()
+    
+    # Configure memory settings
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
     
     # Set device
     device = torch.device(f"cuda:{args.gpu}" if args.gpu >= 0 and torch.cuda.is_available() else "cpu")
     
     # Prepare data
-    train_paths, train_labels, val_paths, val_labels, _, _ = prepare_violence_nonviolence_data(args.data_dir)
+    train_paths, train_labels, val_paths, val_labels, test_paths, test_labels = prepare_violence_nonviolence_data(args.data_dir)
     
-    # Use subset of data for faster search
-    subset_size = min(len(train_paths) // 4, 100)  # Use at most 100 samples
-    train_paths_subset = train_paths[:subset_size]
-    train_labels_subset = train_labels[:subset_size]
-    
-    # Define model classes
-    from Models.model_3dcnn import Model3DCNN
-    from Models.model_2dcnn_lstm import Model2DCNNLSTM
-    from Models.model_transformer import VideoTransformer
-    from Models.model_i3d import TransferLearningI3D
-    from Models.model_slowfast import SlowFastNetwork
-    from Models.model_r2plus1d import R2Plus1DNet
-    
+    # Define model classes dictionary
     model_classes = {
-        '3d_cnn': Model3DCNN,
+        'simple_cnn': SimpleCNN,
         '2d_cnn_lstm': Model2DCNNLSTM,
+        '3d_cnn': Model3DCNN,
         'transformer': VideoTransformer,
-        'i3d': TransferLearningI3D,
         'slowfast': SlowFastNetwork,
-        'r2plus1d': R2Plus1DNet
+        'r2plus1d': R2Plus1DNet,
+        'cnn_lstm': ViolenceCNNLSTM,
+        'two_stream': TwoStreamNetwork,
+        'temporal_3d_cnn': Temporal3DCNN,
+        'i3d': TransferLearningI3D,
+        'hybrid': ModelHybrid
     }
     
     # Filter model classes based on args.model_types
     selected_model_classes = {k: v for k, v in model_classes.items() if k in args.model_types}
     
-    # Define parameter grids for each model
+    # Create parameter grids with memory-optimized values - model specific parameters only!
     param_grids = {
-        '3d_cnn': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False, True]
-        },
-        '2d_cnn_lstm': {
-            'lstm_hidden_size': [256, 512],
-            'lstm_num_layers': [1, 2],
-            'dropout_prob': [0.3, 0.5],
-            'use_pose': [False, True]
-        },
-        'transformer': {
-            'embed_dim': [256, 512],
-            'num_heads': [4, 8],
-            'num_layers': [2, 4],
-            'dropout': [0.1, 0.3]
-        },
-        'i3d': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'use_pose': [False, True]
-        },
-        'slowfast': {
-            'alpha': [4, 8],
-            'beta': [1/8, 1/4],
+        'simple_cnn': {
             'dropout_prob': [0.3, 0.5]
         },
+        '3d_cnn': {
+            'dropout_prob': [0.3, 0.5]
+        },
+        '2d_cnn_lstm': {
+            'lstm_hidden_size': [256],
+            'lstm_num_layers': [1],
+            'dropout_prob': [0.3, 0.5]
+        },
+        'transformer': {
+            'embed_dim': [128],
+            'num_heads': [2],
+            'num_layers': [1],
+            'dropout': [0.1, 0.3],
+            'use_pose': [False]  # Only for transformer
+        },
+        'cnn_lstm': {
+            'lstm_hidden_size': [256],
+            'num_layers': [1],
+            'dropout': [0.3, 0.5]
+        },
+        'slowfast': {
+            'alpha': [4],
+            'beta': [1/8],
+            'dropout_prob': [0.3]
+        },
         'r2plus1d': {
-            'dropout_prob': [0.3, 0.5, 0.7],
-            'frozen_layers': [None, ['stem'], ['stem', 'layer1']]
+            'dropout_prob': [0.3, 0.5]
+        },
+        'two_stream': {
+            'spatial_weight': [0.8],
+            'temporal_weight': [1.2],
+            'dropout_prob': [0.3]
+        },
+        'temporal_3d_cnn': {
+            # Minimal params for testing
+        },
+        'i3d': {
+            'dropout_prob': [0.3]
+        },
+        'hybrid': {
+            'dropout': [0.3]
         }
+    }
+    
+    # Create base params - common parameters for initialization
+    base_params = {
+        'simple_cnn': {'num_classes': 2},
+        '3d_cnn': {'num_classes': 2, 'pretrained': True},
+        '2d_cnn_lstm': {'num_classes': 2, 'pretrained': True},
+        'transformer': {'num_classes': 2},  # use_pose is in param_grid
+        'cnn_lstm': {'num_classes': 2},
+        'slowfast': {'num_classes': 2, 'pretrained': True},
+        'r2plus1d': {'num_classes': 2, 'pretrained': True},
+        'two_stream': {'num_classes': 2, 'pretrained': True},
+        'temporal_3d_cnn': {'num_classes': 2},
+        'i3d': {'num_classes': 2},
+        'hybrid': {'num_classes': 2}
     }
     
     # Run sequential search
     results = sequential_hyperparameter_search(
         model_classes=selected_model_classes,
-        train_paths=train_paths_subset,
-        train_labels=train_labels_subset,
-        val_paths=val_paths,
-        val_labels=val_labels,
+        train_paths=train_paths[:100],  # Use subset for faster search
+        train_labels=train_labels[:100],
+        val_paths=val_paths[:50],
+        val_labels=val_labels[:50],
         param_grids={k: v for k, v in param_grids.items() if k in args.model_types},
+        base_params={k: v for k, v in base_params.items() if k in args.model_types},
         output_dir=args.output_dir,
         device=device,
         num_epochs=args.num_epochs
     )
     
-    # Print summary
     print("\nHyperparameter search complete!")
     print(f"Results saved to {args.output_dir}")
-    
-    for model_name, result in results.items():
-        print(f"\n{model_name}:")
-        print(f"  Best AUC: {result['best_auc']:.4f}")
-        print(f"  Best parameters: {result['best_params']}")
-        print(f"  Duration: {result['duration']}")
 
+# Call the main function if script is executed directly
 if __name__ == "__main__":
     main()

@@ -12,6 +12,7 @@ from pathlib import Path
 import argparse
 import time
 
+
 # Add parent directory to path to import modules
 parent_dir = str(Path(__file__).resolve().parent.parent)
 if parent_dir not in sys.path:

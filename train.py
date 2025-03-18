@@ -11,6 +11,9 @@ import matplotlib.pyplot as plt
 import gc
 import time
 import json
+import torch
+import gc
+import time
 
 class EarlyStopping:
     """Early stopping to stop training when validation performance doesn't improve."""
@@ -55,12 +58,40 @@ class EarlyStopping:
         return self.early_stop
 
 def clear_cuda_memory():
-    """Explicitly clear CUDA memory to prevent allocation issues"""
-    torch.cuda.empty_cache()
-    gc.collect()
+    """Clear CUDA cache to prevent memory issues between model training"""
+
     
-    # Wait a moment to ensure memory is freed
-    time.sleep(1)
+    # Clear PyTorch cache
+    if torch.cuda.is_available():
+        # Print memory stats before clearing
+        allocated_before = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
+        reserved_before = torch.cuda.memory_reserved() / (1024 ** 3)  # GB
+        
+        # Empty cache
+        torch.cuda.empty_cache()
+        
+        # Run garbage collector
+        gc.collect()
+        
+        # Reset peak memory stats
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_accumulated_memory_stats()
+        
+        # Try IPC collect if available (new in PyTorch 1.9+)
+        try:
+            torch.cuda.ipc_collect()
+        except (AttributeError, RuntimeError):
+            pass
+        
+        # Wait a moment to ensure memory is freed
+        time.sleep(1)
+        
+        # Print memory stats after clearing
+        allocated_after = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
+        reserved_after = torch.cuda.memory_reserved() / (1024 ** 3)  # GB
+        
+        print(f"GPU Memory: {allocated_before:.3f}GB → {allocated_after:.3f}GB allocated, "
+              f"{reserved_before:.3f}GB → {reserved_after:.3f}GB reserved")
 
 def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None, grad_clip=None):
     """Train model for one epoch with optional gradient clipping"""

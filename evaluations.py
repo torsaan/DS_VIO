@@ -364,6 +364,7 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         all_targets[model_name] = targets
     
     # Verify all models processed the same number of samples
+   # Verify all models processed the same number of samples
     sample_counts = [len(preds) for preds in all_model_preds]
     if len(set(sample_counts)) > 1:
         print(f"Warning: Models processed different numbers of samples: {sample_counts}")
@@ -371,12 +372,15 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         min_length = min(sample_counts)
         all_model_preds = [preds[:min_length] for preds in all_model_preds]
         all_model_probs = [probs[:min_length] for probs in all_model_probs]
-    
+    else:
+        # Add this line to define min_length when all sample counts are the same
+        min_length = sample_counts[0]
+
     # Choose targets from the first model (since they should be the same)
     targets = list(all_targets.values())[0]
     if len(targets) > min_length:
         targets = targets[:min_length]
-    
+        
     # Convert to numpy arrays
     all_model_preds = np.array(all_model_preds)
     all_model_probs = np.array(all_model_probs)

@@ -18,7 +18,7 @@ from Models.model_r2plus1d import R2Plus1DNet
 from Models.model_simplecnn import SimpleCNN
 from Models.model_hybrid import ModelHybrid
 from Models.model_Temporal3DCNN import Temporal3DCNN
-from Models.violence_cnn_lstm import ViolenceCNNLSTM
+from Models.model_2dcnn_lstm import ViolenceCNNLSTM
 
 
 
@@ -146,7 +146,7 @@ def initialize_model(model_type, device, use_pose=False, **overrides):
     
     elif model_type == 'cnn_lstm':
         model_params = get_hyperparameters(model_type, use_pose)
-        from Models.violence_cnn_lstm import ViolenceCNNLSTM
+        from Models.model_2dcnn_lstm import ViolenceCNNLSTM
         model = ViolenceCNNLSTM(**config).to(device)
         
     else:

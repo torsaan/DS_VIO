@@ -1,14 +1,17 @@
-Sequential Hyperparameter Search started at 2025-03-16 21:13:27
+Sequential Hyperparameter Search started at 2025-03-18 01:12:02
 Models to test: simple_cnn, 3d_cnn
 
 Results for simple_cnn:
-  Duration: 0:00:08.198595
-  Best AUC: 0.7500
-  Best parameters: {'num_classes': 2, 'dropout_prob': 0.5}
+  Duration: 0:00:00.491410
+  Best AUC: 0.0000
+  Best parameters: None
 
-Error during hyperparameter search for 3d_cnn: CUDA out of memory. Tried to allocate 98.00 MiB. GPU 0 has a total capacity of 5.78 GiB of which 37.25 MiB is free. Including non-PyTorch memory, this process has 4.81 GiB memory in use. Of the allocated memory 4.61 GiB is allocated by PyTorch, and 81.17 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+Results for 3d_cnn:
+  Duration: 0:00:01.326145
+  Best AUC: 0.0000
+  Best parameters: None
 
 
-Sequential Hyperparameter Search completed at 2025-03-16 21:13:37
+Sequential Hyperparameter Search completed at 2025-03-18 01:12:04
 
-Best overall model: simple_cnn with AUC 0.7500
+Best overall model: simple_cnn with AUC 0.0000

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Temporal3DCNN(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=2, dropout_prob=0.5):
         super(Temporal3DCNN, self).__init__()
         
         # Temporal feature extraction
@@ -49,37 +49,43 @@ class Temporal3DCNN(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(256, 512),  # Now we only have 256 input features thanks to global avg pooling
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(dropout_prob),
             nn.Linear(512, num_classes)
         )
+        
+        # Initialize weights
+        self.initialize_weights()
+    
+    def initialize_weights(self):
+        """Initialize model weights using Kaiming initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv3d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm3d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
-        # Print original input shape for debugging
-        print(f"Original input shape: {x.shape}")
-        
         # Input shape is [batch_size, frames, channels, height, width]
         # Need to permute to [batch_size, channels, frames, height, width]
         if x.dim() == 5 and x.shape[1] != 3:
             x = x.permute(0, 2, 1, 3, 4)
-            print(f"Permuted input shape: {x.shape}")
         
         # Pass through feature extractors
         x = self.temporal_conv(x)
-        print(f"After temporal conv: {x.shape}")
-        
         x = self.spatial_conv(x)
-        print(f"After spatial conv: {x.shape}")
-        
         x = self.combined_conv(x)
-        print(f"After combined conv: {x.shape}")
         
         # Global average pooling to reduce dimensions
         x = self.global_avg_pool(x)
-        print(f"After global avg pool: {x.shape}")
         
         # Flatten - will now be [batch_size, 256]
-        x = x.view(x.size(0), -1)
-        print(f"Flattened shape: {x.shape}")
+        x = torch.flatten(x, 1)
         
         # Classification with the pre-defined classifier
         x = self.classifier(x)

@@ -69,12 +69,14 @@ def test_metrics_calculation():
         print(f"  Confusion matrix shape: {cm.shape}")
         
         # Check report structure
-        expected_keys = ['accuracy', 'macro avg', 'weighted avg', '0', '1']
+            # Check report structure
+        # Check report structure
+        expected_keys = ['accuracy', 'macro avg', 'weighted avg', 'NonViolence', 'Violence'] # Changed from '0', '1'
         for key in expected_keys:
             if key not in report:
                 print(f"  Error: Expected key '{key}' missing from report")
-                return False
-        
+                return False  # Move this inside the if statement to return only when a key is missing
+    
         # Test ROC curve calculation
         print("\nTesting ROC curve calculation...")
         fpr, tpr, _ = roc_curve(all_targets, all_probs)

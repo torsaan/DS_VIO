@@ -43,14 +43,38 @@ class SlowFastNetwork(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        # x: expected shape [B, C, T, H, W]
+        # Handle different input formats
+        if x.dim() == 5 and x.shape[1] != 3:  # If format is [B, T, C, H, W]
+            x = x.permute(0, 2, 1, 3, 4)  # Convert to [B, C, T, H, W]
+        
+        # Ensure there are enough frames for temporal sampling
+        if x.size(2) < self.alpha:
+            # Upsample temporally if fewer frames than alpha
+            x = torch.nn.functional.interpolate(
+                x, 
+                size=(max(self.alpha, x.size(2)), x.size(3), x.size(4)),
+                mode='trilinear', 
+                align_corners=False
+            )
+        
         # Slow pathway: use every α-th frame.
         slow_x = x[:, :, ::self.alpha, :, :]
+        
         # Fast pathway: use full frame rate.
         fast_x = x
+        
+        # Ensure both pathways have valid input
+        if slow_x.size(2) < 1:
+            raise ValueError(f"Slow pathway has no frames after sampling. Input had {x.size(2)} frames, alpha={self.alpha}")
+            
+        # Process through pathways
         slow_features = self.slow_model(slow_x)  # [B, slow_features]
         fast_features = self.fast_model(fast_x)  # [B, fast_features]
+        
+        # Feature fusion
         reduced_fast = self.fast_reduction(fast_features)  # [B, fast_features * beta]
         combined_features = torch.cat([slow_features, reduced_fast], dim=1)
+        
+        # Classification
         out = self.classifier(combined_features)
         return out

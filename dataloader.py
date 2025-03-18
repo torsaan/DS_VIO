@@ -9,28 +9,25 @@ from torchvision import transforms
 from PIL import Image
 from utils.augmentor import VideoAugmenter
 import random
+import tqdm
+
+
+
+
+
+
 
 class EnhancedViolenceDataset(Dataset):
     def __init__(self, video_paths, labels, pose_dir=None, 
                  transform=None, num_frames=32, target_fps=15,
                  normalize_pose=True, augment=True, model_type='3d_cnn',
-                 frame_width=224, frame_height=224, training=True):
+                 frame_width=224, frame_height=224, training=True,
+                 preload_to_ram=False):
         """
         Enhanced dataset for violence detection with both video and pose data.
         
         Args:
-            video_paths: List of paths to video files
-            labels: List of labels (0 for non-violence, 1 for violence)
-            pose_dir: Directory containing pose keypoint CSV files
-            transform: Optional transforms to apply to video frames
-            num_frames: Number of frames to sample from each video
-            target_fps: Target frame rate for sampling (defaults to 15 FPS)
-            normalize_pose: Whether to normalize pose keypoints
-            augment: Whether to apply data augmentation
-            model_type: Type of model ('3d_cnn', '2d_cnn_lstm', etc.)
-            frame_width: Width for resizing frames
-            frame_height: Height for resizing frames
-            training: Whether this dataset is used for training
+            preload_to_ram: Whether to preload videos into RAM
         """
         self.video_paths = video_paths
         self.labels = labels
@@ -44,6 +41,7 @@ class EnhancedViolenceDataset(Dataset):
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.training = training
+        self.preload_to_ram = preload_to_ram
         
         # Initialize augmenters
         if self.augment and self.training:
@@ -59,6 +57,18 @@ class EnhancedViolenceDataset(Dataset):
         
         # Track current augmentation settings for consistency between video and pose
         self.current_augment_types = None
+        
+        # Pre-load videos to RAM if requested
+        self.preloaded_frames = {}
+        if self.preload_to_ram:
+            print(f"Preloading {len(video_paths)} videos to RAM...")
+            for i, video_path in enumerate(tqdm(video_paths, desc="Preloading videos")):
+                try:
+                    frames = self.read_video(video_path)
+                    self.preloaded_frames[video_path] = frames
+                except Exception as e:
+                    print(f"Error preloading video {video_path}: {e}")
+            print(f"Preloaded {len(self.preloaded_frames)} videos to RAM")
 
     def __len__(self):
         return len(self.video_paths)
@@ -68,7 +78,6 @@ class EnhancedViolenceDataset(Dataset):
         Read a fixed number of frames from a video, evenly distributed throughout.
         """
         from utils.video_standardizer import extract_fixed_frames
-        from utils.dataprep import NUM_FRAMES
         
         # Extract frames with fixed count
         frames = extract_fixed_frames(
@@ -83,136 +92,30 @@ class EnhancedViolenceDataset(Dataset):
             frames = [np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8) 
                     for _ in range(self.num_frames)]
         
-        return frames
-    
-    def load_pose_keypoints(self, video_path):
-        """
-        Load pose keypoints from CSV files.
-        """
-        if not self.pose_dir:
-            return None
-        
-        # Extract the video filename without extension
-        video_filename = os.path.basename(video_path)
-        video_name = os.path.splitext(video_filename)[0]
-        
-        # Look for the pose CSV in different potential locations
-        potential_paths = [
-            os.path.join(self.pose_dir, f"{video_name}.csv"),
-            os.path.join(self.pose_dir, "Violence", f"{video_name}.csv") if video_name.startswith("V_") else None,
-            os.path.join(self.pose_dir, "NonViolence", f"{video_name}.csv") if video_name.startswith("NV_") else None,
-        ]
-        
-        csv_path = next((p for p in potential_paths if p and os.path.exists(p)), None)
-        
-        if csv_path:
-            try:
-                keypoints = []
-                with open(csv_path, 'r') as f:
-                    reader = csv.reader(f)
-                    header = next(reader, None)  # Skip header if present
-                    
-                    # Check if there's data after the header
-                    for row in reader:
-                        # Assuming format: frame_idx, x1, y1, x2, y2, ...
-                        # Skip the frame index column if present
-                        if len(row) >= 3:  # At least one keypoint (x,y) plus potential frame_idx
-                            if row[0].isdigit():  # If first column is frame index
-                                kp = list(map(float, row[1:]))
-                            else:  # If all columns are keypoints
-                                kp = list(map(float, row))
-                            keypoints.append(kp)
-                
-                if not keypoints:
-                    print(f"Warning: CSV file {csv_path} exists but contains no valid data")
-                    return torch.zeros((self.num_frames, 66), dtype=torch.float32)
-                    
-                # Convert to numpy for easier processing
-                keypoints = np.array(keypoints)
-                
-                # Sample keypoints to match self.num_frames
-                if len(keypoints) >= self.num_frames:
-                    indices = np.linspace(0, len(keypoints)-1, self.num_frames, dtype=int)
-                    keypoints = keypoints[indices]
-                else:
-                    # Pad with the last keypoint if too few frames
-                    padding = np.tile(keypoints[-1:], (self.num_frames - len(keypoints), 1))
-                    keypoints = np.vstack([keypoints, padding])
-                
-                # Normalize keypoints if needed
-                if self.normalize_pose:
-                    keypoints = self.normalize_keypoints(keypoints)
-                    
-                # Apply augmentation if needed
-                if self.augment and self.training and self.current_augment_types:
-                    # Use the same augmentation types as for the video frames
-                    keypoints = self.pose_augmenter.apply_to_keypoints(
-                        keypoints, self.frame_width, self.frame_height, self.current_augment_types)
-                
-                return torch.tensor(keypoints, dtype=torch.float32)
-                
-            except Exception as e:
-                print(f"Error loading pose keypoints from {csv_path}: {e}")
-                return torch.zeros((self.num_frames, 66), dtype=torch.float32)
-        else:
-            print(f"Warning: No pose keypoints found for {video_name}")
-            return torch.zeros((self.num_frames, 66), dtype=torch.float32)
-    
-    def normalize_keypoints(self, keypoints):
-        """
-        Normalize keypoints to the range [0, 1].
-        """
-        normalized = keypoints.copy()
-        
-        # Assuming alternating x, y coordinates
-        for i in range(0, normalized.shape[1], 2):
-            # Normalize x coordinates
-            normalized[:, i] = normalized[:, i] / self.frame_width
-            
-            # Normalize y coordinates (if not at the end of the array)
-            if i + 1 < normalized.shape[1]:
-                normalized[:, i + 1] = normalized[:, i + 1] / self.frame_height
-        
-        return normalized
-    
+        return frames[:self.num_frames]  # Ensure we return exactly num_frames frames
     def process_frames(self, frames):
         """
-        Process frames based on the model type and apply transformations.
+        Process frames for the model by applying transformations and formatting.
         """
+        # Convert frames to PIL Images for transformation
         processed_frames = []
-        
-        # Apply augmentation if needed (only during training)
-        if self.augment and self.training:
-            # Randomly decide which augmentations to apply
-            available_augmentations = ['flip', 'rotate', 'brightness', 'contrast', 'saturation', 'hue', 'crop']
-            num_augs = random.randint(1, 3)  # Apply 1-3 augmentations
-            self.current_augment_types = random.sample(available_augmentations, num_augs)
-            
-            # Apply the same augmentations to all frames
-            frames = self.video_augmenter.augment_video(frames, self.current_augment_types)
-        else:
-            self.current_augment_types = None
-        
-        # Apply transforms to each frame
         for frame in frames:
-            if self.transform:
-                # Convert to PIL Image for torchvision transforms
-                pil_frame = Image.fromarray(frame)
-                transformed_frame = self.transform(pil_frame)
-            else:
-                # Basic processing: resize and convert to tensor
-                frame = cv2.resize(frame, (self.frame_width, self.frame_height))
-                transformed_frame = torch.from_numpy(frame.transpose(2, 0, 1).astype(np.float32)) / 255.0
+            # Convert numpy array to PIL Image
+            pil_image = Image.fromarray(frame)
             
-            processed_frames.append(transformed_frame)
+            # Apply transformations if specified
+            if self.transform:
+                pil_image = self.transform(pil_image)
+            
+            processed_frames.append(pil_image)
         
-        # Stack frames based on model type
+        # Stack frames into a tensor
+        frames_tensor = torch.stack(processed_frames)
+        
+        # Rearrange dimensions based on model type
         if self.model_type == '3d_cnn':
-            # For 3D CNN: [C, T, H, W]
-            frames_tensor = torch.stack(processed_frames, dim=1)
-        else:
-            # For 2D CNN+LSTM, transformer, etc.: [T, C, H, W]
-            frames_tensor = torch.stack(processed_frames, dim=0)
+            # [T, C, H, W] -> [C, T, H, W] for 3D CNN
+            frames_tensor = frames_tensor.permute(1, 0, 2, 3)
         
         return frames_tensor
     
@@ -223,18 +126,19 @@ class EnhancedViolenceDataset(Dataset):
         video_path = self.video_paths[idx]
         label = self.labels[idx]
         
-        # Read video frames
         try:
-            frames = self.read_video(video_path)
+            # Read video frames, either from RAM or disk
+            if self.preload_to_ram and video_path in self.preloaded_frames:
+                frames = self.preloaded_frames[video_path]
+            else:
+                frames = self.read_video(video_path)
             
             # Process frames
             frames_tensor = self.process_frames(frames)
             
-            # Load pose keypoints
-            pose_keypoints = self.load_pose_keypoints(video_path)
-            
-            # Return based on whether pose data is used
-            if pose_keypoints is not None:
+            # Load pose keypoints if needed
+            if self.pose_dir:
+                pose_keypoints = self.load_pose_keypoints(video_path)
                 return frames_tensor, pose_keypoints, torch.tensor(label, dtype=torch.long)
             else:
                 return frames_tensor, torch.tensor(label, dtype=torch.long)
@@ -243,14 +147,17 @@ class EnhancedViolenceDataset(Dataset):
             print(f"Error processing video {video_path}: {e}")
             # Return zeros with the correct shape as a fallback
             if self.model_type == '3d_cnn':
-                frames_tensor = torch.zeros((3, self.num_frames, self.frame_height, self.frame_width), dtype=torch.float32)
+                frames_tensor = torch.zeros((3, self.num_frames, self.frame_height, self.frame_width), 
+                                           dtype=torch.float32)
             else:
-                frames_tensor = torch.zeros((self.num_frames, 3, self.frame_height, self.frame_width), dtype=torch.float32)
+                frames_tensor = torch.zeros((self.num_frames, 3, self.frame_height, self.frame_width), 
+                                           dtype=torch.float32)
             
-            pose_keypoints = torch.zeros((self.num_frames, 66), dtype=torch.float32)
-            
-            return frames_tensor, pose_keypoints, torch.tensor(label, dtype=torch.long)
-
+            if self.pose_dir:
+                pose_keypoints = torch.zeros((self.num_frames, 66), dtype=torch.float32)
+                return frames_tensor, pose_keypoints, torch.tensor(label, dtype=torch.long)
+            else:
+                return frames_tensor, torch.tensor(label, dtype=torch.long)
 
 def get_transforms(frame_height=224, frame_width=224):
     """
@@ -273,22 +180,13 @@ def get_transforms(frame_height=224, frame_width=224):
 def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
                    test_video_paths, test_labels, pose_dir=None, batch_size=8,
                    num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn',
-                   pin_memory=True, persistent_workers=True, prefetch_factor=2):
+                   pin_memory=True, persistent_workers=True, prefetch_factor=2,
+                   preload_to_ram=False):
     """
     Create DataLoaders for training, validation, and testing with optimizations.
     
     Args:
-        train_video_paths, val_video_paths, test_video_paths: Lists of video paths
-        train_labels, val_labels, test_labels: Lists of labels
-        pose_dir: Directory containing pose keypoints
-        batch_size: Batch size
-        num_workers: Number of worker processes for DataLoader
-        target_fps: Target frame rate for sampling
-        num_frames: Number of frames to sample per video
-        model_type: Type of model ('3d_cnn', '2d_cnn_lstm', etc.)
-        pin_memory: Whether to pin memory in DataLoader (speeds up GPU transfers)
-        persistent_workers: Whether to keep worker processes alive between iterations
-        prefetch_factor: Number of batches to prefetch per worker
+        preload_to_ram: Whether to preload the dataset into RAM (for small datasets)
         
     Returns:
         train_loader, val_loader, test_loader
@@ -296,26 +194,34 @@ def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels
     # Get transforms
     train_transform, val_transform = get_transforms()
     
+    # If we want to preload to RAM, load a subset of the data
+    if preload_to_ram:
+        # Limit to a reasonable number of samples to avoid memory issues
+        max_samples = 500
+        train_video_paths = train_video_paths[:min(len(train_video_paths), max_samples)]
+        train_labels = train_labels[:min(len(train_labels), max_samples)]
+        print(f"Preloading {len(train_video_paths)} training samples to RAM...")
+    
     # Create datasets with fixed frame count
     train_dataset = EnhancedViolenceDataset(
         train_video_paths, train_labels, pose_dir=pose_dir,
         transform=train_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=True, model_type=model_type,
-        training=True
+        training=True, preload_to_ram=preload_to_ram
     )
     
     val_dataset = EnhancedViolenceDataset(
         val_video_paths, val_labels, pose_dir=pose_dir,
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
-        training=False
+        training=False, preload_to_ram=False  # Don't preload validation set
     )
     
     test_dataset = EnhancedViolenceDataset(
         test_video_paths, test_labels, pose_dir=pose_dir,
         transform=val_transform, num_frames=num_frames, 
         target_fps=target_fps, augment=False, model_type=model_type,
-        training=False
+        training=False, preload_to_ram=False  # Don't preload test set
     )
     
     # Only use persistent_workers if num_workers > 0
@@ -354,3 +260,4 @@ def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels
     )
     
     return train_loader, val_loader, test_loader
+    

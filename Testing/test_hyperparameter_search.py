@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime
 import matplotlib.pyplot as plt
 
+CUDA_LAUNCH_BLOCKING=1 
 # Add parent directory to path to import modules
 parent_dir = str(Path(__file__).resolve().parent.parent)
 if parent_dir not in sys.path:
