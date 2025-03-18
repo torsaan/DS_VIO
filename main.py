@@ -14,9 +14,12 @@ from Models.model_2dcnn_lstm import Model2DCNNLSTM
 from Models.model_transformer import VideoTransformer
 from Models.model_i3d import TransferLearningI3D
 
-
-
-
+torch.set_float32_matmul_precision("medium")
+torch.cuda.set_per_process_memory_fraction(0.75)
+torch.backends.cudnn.benchmark = False
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+torch.set_num_threads(4)
 
 def parse_args():
     """Parse command line arguments"""
