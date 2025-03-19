@@ -94,7 +94,6 @@ def clear_cuda_memory():
               f"{reserved_before:.3f}GB → {reserved_after:.3f}GB reserved")
 
 def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None, grad_clip=None):
-    """Train model for one epoch with optional gradient clipping"""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -102,61 +101,40 @@ def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None
     
     progress_bar = tqdm(data_loader, desc="Training")
     for batch in progress_bar:
-        # Handle different input types (with or without pose data)
-        if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-            frames, pose, targets = batch
-            frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-            inputs = (frames, pose)
-        elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-            frames, targets = batch
-            frames, targets = frames.to(device), targets.to(device)
-            inputs = frames
-        else:
-            raise ValueError("Unexpected batch format")
+        # Since pose is removed, every batch is (frames, targets)
+        frames, targets = batch
+        frames, targets = frames.to(device), targets.to(device)
+        inputs = frames  # Only frames are used
         
-        # Zero gradients
         optimizer.zero_grad()
-        
-        # Forward pass
         outputs = model(inputs)
-        
-        # Calculate loss
         loss = criterion(outputs, targets)
-        
-        # Backward pass and optimize
         loss.backward()
         
-        # Apply gradient clipping if specified
         if grad_clip is not None:
             nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             
         optimizer.step()
         
-        # Update learning rate if using OneCycleLR or similar per-batch scheduler
         if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
             scheduler.step()
         
-        # Update statistics
         running_loss += loss.item() * targets.size(0)
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
         
-        # Update progress bar
         progress_bar.set_postfix({
             'loss': loss.item(),
             'acc': 100. * correct / total,
             'lr': optimizer.param_groups[0]['lr']
         })
     
-    # Calculate epoch metrics
     epoch_loss = running_loss / total
     epoch_acc = 100. * correct / total
-    
     return epoch_loss, epoch_acc
 
 def validate(model, data_loader, criterion, device):
-    """Validate model on validation set with AUC calculation"""
     model.eval()
     running_loss = 0.0
     correct = 0
@@ -167,39 +145,26 @@ def validate(model, data_loader, criterion, device):
     
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Validation"):
-            # Handle different input types (with or without pose data)
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            # Now always assume batch is (frames, targets)
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
+            inputs = frames
             
-            # Forward pass
             outputs = model(inputs)
-            
-            # Calculate loss
             loss = criterion(outputs, targets)
             
-            # Calculate probabilities
             probs = torch.nn.functional.softmax(outputs, dim=1)
             
-            # Update statistics
             running_loss += loss.item() * targets.size(0)
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             
-            # Store predictions, probabilities and targets for metrics
             all_preds.extend(predicted.cpu().numpy())
-            all_probs.extend(probs[:, 1].cpu().numpy())  # Class 1 (positive) probabilities
+            # For binary classification, use class 1 probability
+            all_probs.extend(probs[:, 1].cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
     
-    # Calculate validation metrics
     val_loss = running_loss / total
     val_acc = 100. * correct / total
     
@@ -492,23 +457,23 @@ def clear_cuda_memory():
     gc.collect()
     
     
-def load_checkpoint(model, checkpoint_path, device=None):
-    """
-    Load model weights from a checkpoint file
+def load_checkpoint(model, optimizer=None, scheduler=None, model_path=None, device=None):
+    """Load a checkpoint to resume training"""
+    if not model_path or not os.path.exists(model_path):
+        print(f"Checkpoint {model_path} not found. Starting from scratch.")
+        return model, optimizer, scheduler, 0, {}
     
-    Args:
-        model: PyTorch model to load weights into
-        checkpoint_path: Path to the checkpoint file
-        device: Device to load the model to (optional)
-        
-    Returns:
-        Loaded model
-    """
-    if device is None:
-        device = next(model.parameters()).device
-        
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     
-    print(f"Loaded checkpoint from {checkpoint_path}")
-    return model
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    start_epoch = checkpoint.get('epoch', 0) + 1
+    metrics = checkpoint.get('metrics', {})
+    
+    print(f"Resumed from epoch {checkpoint.get('epoch', 0)}")
+    return model, optimizer, scheduler, start_epoch, metrics

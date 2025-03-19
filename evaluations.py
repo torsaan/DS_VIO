@@ -40,17 +40,9 @@ def evaluate_model(model, test_loader, criterion, device):
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Testing"):
-            # Handle different input types (with or without pose data)
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
+            inputs = frames
             
             # Forward pass
             outputs = model(inputs)
@@ -303,7 +295,7 @@ for model_name, model_results in results.items()
 
 def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output"):
     """
-    Create an ensemble of models using majority voting and weighted averaging of probabilities
+    Create an ensemble of models using majority voting and weighted averaging of probabilities.
     
     Args:
         models_dict: Dictionary of models {model_name: model}
@@ -312,20 +304,17 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         output_dir: Directory to save results
         
     Returns:
-        Dictionary with ensemble results
+        Dictionary with ensemble results.
     """
-    # Create ensemble directory
     ensemble_dir = os.path.join(output_dir, 'ensemble')
     os.makedirs(ensemble_dir, exist_ok=True)
     
     all_model_preds = []
     all_model_probs = []
-    all_targets = {}  # Store targets from each model
+    all_targets = None  # Assume targets are the same across models
     
-    # Collect predictions from all models
     for model_name, model in models_dict.items():
         print(f"Getting predictions from {model_name}...")
-        
         model.eval()
         test_loader = test_loaders[model_name]
         preds = []
@@ -334,105 +323,53 @@ def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output
         
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Ensemble - {model_name}"):
-                # Handle different input types (with or without pose data)
-                if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                    frames, pose, batch_targets = batch
-                    frames, pose = frames.to(device), pose.to(device)
-                    inputs = (frames, pose)
-                elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                    frames, batch_targets = batch
-                    frames = frames.to(device)
-                    inputs = frames
-                else:
-                    raise ValueError("Unexpected batch format")
-                
-                # Store targets
-                targets.extend(batch_targets.cpu().numpy())
-                
-                # Forward pass
-                outputs = model(inputs)
-                
-                # Get predictions and probabilities
+                # Assume each batch is (frames, targets)
+                frames, batch_targets = batch
+                frames, batch_targets = frames.to(device), batch_targets.to(device)
+                outputs = model(frames)
                 batch_probs = torch.nn.functional.softmax(outputs, dim=1)
                 _, batch_preds = outputs.max(1)
-                
                 preds.extend(batch_preds.cpu().numpy())
                 probs.extend(batch_probs.cpu().numpy())
+                targets.extend(batch_targets.cpu().numpy())
         
         all_model_preds.append(preds)
         all_model_probs.append(probs)
-        all_targets[model_name] = targets
+        if all_targets is None:
+            all_targets = targets
     
-    # Verify all models processed the same number of samples
-   # Verify all models processed the same number of samples
-    sample_counts = [len(preds) for preds in all_model_preds]
-    if len(set(sample_counts)) > 1:
-        print(f"Warning: Models processed different numbers of samples: {sample_counts}")
-        # Use the shortest length for all arrays
-        min_length = min(sample_counts)
-        all_model_preds = [preds[:min_length] for preds in all_model_preds]
-        all_model_probs = [probs[:min_length] for probs in all_model_probs]
-    else:
-        # Add this line to define min_length when all sample counts are the same
-        min_length = sample_counts[0]
-
-    # Choose targets from the first model (since they should be the same)
-    targets = list(all_targets.values())[0]
-    if len(targets) > min_length:
-        targets = targets[:min_length]
-        
-    # Convert to numpy arrays
-    all_model_preds = np.array(all_model_preds)
-    all_model_probs = np.array(all_model_probs)
-    targets = np.array(targets)
+    sample_counts = [len(pred) for pred in all_model_preds]
+    min_length = min(sample_counts)
+    all_model_preds = [pred[:min_length] for pred in all_model_preds]
+    all_model_probs = [prob[:min_length] for prob in all_model_probs]
+    targets = np.array(all_targets[:min_length])
     
-    # Majority voting
-    ensemble_preds = np.apply_along_axis(
-        lambda x: np.bincount(x).argmax(), 
-        axis=0, 
-        arr=all_model_preds
-    )
+    all_model_preds = np.array(all_model_preds)  # Shape: (num_models, num_samples)
+    all_model_probs = np.array(all_model_probs)  # Shape: (num_models, num_samples, num_classes)
     
-    # Average probabilities
+    # Majority voting on predictions
+    ensemble_preds = np.apply_along_axis(lambda x: np.bincount(x).argmax(), axis=0, arr=all_model_preds)
+    # Average probabilities across models
     ensemble_probs = np.mean(all_model_probs, axis=0)
-    
-    # Calculate accuracy
     ensemble_acc = 100. * (ensemble_preds == targets).mean()
     
-    # Generate report
-    report, cm = generate_metrics_report(
-        ensemble_preds, targets,
-        output_path=os.path.join(ensemble_dir, 'ensemble_metrics.json')
-    )
+    report, cm = generate_metrics_report(ensemble_preds, targets,
+                                         output_path=os.path.join(ensemble_dir, 'ensemble_metrics.json'))
+    plot_confusion_matrix(cm, output_path=os.path.join(ensemble_dir, 'ensemble_confusion_matrix.png'))
     
-    # Plot confusion matrix
-    plot_confusion_matrix(
-        cm,
-        output_path=os.path.join(ensemble_dir, 'ensemble_confusion_matrix.png')
-    )
-    
-    # Calculate ROC and PR curves for ensemble
+    from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
     fpr, tpr, _ = roc_curve(targets, ensemble_probs[:, 1])
     ensemble_roc_auc = auc(fpr, tpr)
-    
     precision, recall, _ = precision_recall_curve(targets, ensemble_probs[:, 1])
     ensemble_pr_auc = average_precision_score(targets, ensemble_probs[:, 1])
     
-    # Plot ensemble ROC curve
-    plot_roc_curve(
-        fpr, tpr, ensemble_roc_auc,
-        output_path=os.path.join(ensemble_dir, 'ensemble_roc_curve.png'),
-        title='Ensemble Model - ROC Curve'
-    )
+    plot_roc_curve(fpr, tpr, ensemble_roc_auc,
+                   output_path=os.path.join(ensemble_dir, 'ensemble_roc_curve.png'),
+                   title='Ensemble Model - ROC Curve')
+    plot_pr_curve(precision, recall, ensemble_pr_auc,
+                  output_path=os.path.join(ensemble_dir, 'ensemble_pr_curve.png'),
+                  title='Ensemble Model - Precision-Recall Curve')
     
-    # Plot ensemble PR curve
-    plot_pr_curve(
-        precision, recall, ensemble_pr_auc,
-        output_path=os.path.join(ensemble_dir, 'ensemble_pr_curve.png'),
-        title='Ensemble Model - Precision-Recall Curve'
-    )
-    
-    # Store results
     ensemble_results = {
         'accuracy': ensemble_acc,
         'predictions': ensemble_preds,

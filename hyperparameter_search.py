@@ -19,6 +19,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import datetime
 from train import EarlyStopping
+import argparse as args
 
 from Models.model_simplecnn import SimpleCNN
 from Models.model_2dcnn_lstm import Model2DCNNLSTM
@@ -41,11 +42,19 @@ warnings.filterwarnings("ignore", message="Arguments other than a weight enum or
 warnings.filterwarnings("ignore", message="The verbose parameter is deprecated")
 warnings.filterwarnings("ignore", message="`torch.cuda.amp.autocast")
 
-
+def convert_ndarray_to_list(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_ndarray_to_list(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_ndarray_to_list(item) for item in obj]
+    else:
+        return obj
 
 def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                param_grid, base_params=None, device=torch.device("cuda"),
-               output_dir="./hyperparam_search", num_epochs=10,
+               output_dir="./hyperparam_search", num_epochs=6,
                batch_size=2, num_workers=4, model_type='3d_cnn'):
     """
     Perform grid search for hyperparameter optimization with memory optimizations
@@ -168,11 +177,9 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
             )
             
             # Evaluate model on validation set
-            val_loss, val_acc, _, _, all_probs, metrics_dict = evaluate_model_with_optimization(
-                trained_model, val_loader, criterion, device, use_amp=True
-            )
-            
-            # Extract evaluation metrics
+            metrics_dict, all_preds, all_targets, all_probs = evaluate_model_with_optimization(model, val_loader, criterion, device, use_amp=True)
+            val_loss = metrics_dict.get('val_loss', 0)
+            val_acc = metrics_dict.get('val_acc', 0)
             roc_auc = metrics_dict.get('roc_auc', 0)
             pr_auc = metrics_dict.get('pr_auc', 0)
             
@@ -209,12 +216,14 @@ def grid_search(model_class, train_paths, train_labels, val_paths, val_labels,
                 print(f"New best parameters found with AUC {best_auc:.4f}")
             
             # Save current results
+            results_to_save = convert_ndarray_to_list({
+            'results': results,
+            'best_params': best_params,
+            'best_auc': float(best_auc)
+        })
+
             with open(os.path.join(output_dir, 'grid_search_results.json'), 'w') as f:
-                json.dump({
-                    'results': results,
-                    'best_params': best_params,
-                    'best_auc': float(best_auc)
-                }, f, indent=4)
+                json.dump(results_to_save, f, indent=4)
                 
         except Exception as e:
             print(f"Error during hyperparameter search for {model_type}: {str(e)}")
@@ -302,7 +311,7 @@ def plot_grid_search_results(results, param_names, output_dir):
 
     
 def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, val_labels, 
-                             output_dir="./hyperparam_search"):
+                             output_dir="./hyperparam_search", num_epochs=6, batch_size=2):
     """Example function showing how to use grid search for specific models"""
     
     # Define parameter grid based on model type
@@ -325,10 +334,9 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
             'lstm_hidden_size': [256, 512],
-            'lstm_num_layers': [1, 2],
+            'lstm_num_layers': [2, 3],
             'dropout_prob': [0.3, 0.5],
-            'learning_rate': [1e-4, 5e-4],
-            'bidirectional': [True, False]
+            'learning_rate': [1e-4, 5e-4]
         }
         
         base_params = {
@@ -350,7 +358,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
         base_params = {
             'num_classes': 2,
-            'use_pose': False
+            
         }
         
         model_type = 'transformer'
@@ -427,7 +435,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
         base_params = {
             'num_classes': 2
-            # Removed 'use_pose': False
+            
         }
         
         model_type = 'simple_cnn'
@@ -456,12 +464,14 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         param_grid, 
         base_params,
         output_dir=output_dir,
-        model_type=model_type
+        model_type=model_type,
+        num_epochs=num_epochs,  # Add these parameters
+        batch_size=batch_size
     )
 
 def sequential_hyperparameter_search(model_classes, train_paths, train_labels, val_paths, val_labels,
-                                        param_grids, base_params=None, output_dir="./hyperparam_search",
-                                        device=torch.device("cuda"), num_epochs=10):
+                                    param_grids, base_params=None, output_dir="./hyperparam_search",
+                                    device=torch.device("cuda"), num_epochs=6, batch_size=2):
         """
         Run hyperparameter search for multiple models sequentially
         
@@ -527,18 +537,19 @@ def sequential_hyperparameter_search(model_classes, train_paths, train_labels, v
                 print(f"Starting search at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
                 results = grid_search(
-                    model_class=model_class,
-                    train_paths=train_paths,
-                    train_labels=train_labels,
-                    val_paths=val_paths,
-                    val_labels=val_labels,
-                    param_grid=param_grid,
-                    base_params=base_param,
-                    device=device,
-                    output_dir=model_output_dir,
-                    num_epochs=num_epochs,
-                    model_type=model_type
-                )
+                model_class=model_class,
+                train_paths=train_paths,
+                train_labels=train_labels,
+                val_paths=val_paths,
+                val_labels=val_labels,
+                param_grid=param_grid,
+                base_params=base_param,
+                device=device,
+                output_dir=model_output_dir,
+                num_epochs=num_epochs,
+                batch_size=batch_size,  # Add this line
+                model_type=model_type
+            )
                 
                 end_time = datetime.now()
                 duration = end_time - start_time
@@ -581,27 +592,27 @@ def sequential_hyperparameter_search(model_classes, train_paths, train_labels, v
         return all_results
 
 
-def train_model_with_optimization(model_name, model, train_loader, val_loader, num_epochs=10, 
-                                device=torch.device("cuda"), output_dir="./output", 
-                                patience=7, resume_from=None, grad_clip=None, use_amp=True, **kwargs):
+def train_model_with_optimization(model_name, model, train_loader, val_loader, num_epochs=6, 
+                                  device=torch.device("cuda"), output_dir="./output", 
+                                  patience=7, resume_from=None, grad_clip=None, use_amp=True, **kwargs):
     """
-    Train a model with memory optimizations including mixed precision training
+    Train a model with memory optimizations including mixed precision training.
+    Assumes that batches are in the format (frames, targets) with no pose data.
     """
-    # Import hyperparameters
     from hyperparameters import get_optimizer, get_training_config
-    
+    import os
+    import torch.cuda.amp as amp
+    from train import EarlyStopping  # Ensure EarlyStopping is imported
+
     # Create model directory
     model_dir = os.path.join(output_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
     
     # Set up criterion and optimizer
     criterion = torch.nn.CrossEntropyLoss()
-    
-    # Get optimizer params with defaults
     lr = kwargs.get('learning_rate', 0.0001)
     optimizer_name = kwargs.get('optimizer', 'adam')
     
-    # Create optimizer
     optimizer = get_optimizer(
         model, 
         model_type=model_name,
@@ -619,187 +630,135 @@ def train_model_with_optimization(model_name, model, train_loader, val_loader, n
     early_stopping = EarlyStopping(patience=patience, verbose=True, mode='max')
     
     # Set up gradient scaler for mixed precision
-    scaler = torch.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
-    # Training loop
     best_auc = 0.0
     for epoch in range(num_epochs):
-        # Train
         model.train()
         train_loss = 0.0
         correct = 0
         total = 0
         
         for batch in train_loader:
-            # Handle different input types
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            # Expect batch to be (frames, targets)
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
+            inputs = frames
             
-            # Zero gradients
             optimizer.zero_grad()
             
-            # Mixed precision forward pass
             with amp.autocast(enabled=use_amp):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
             
-            # Mixed precision backward pass
             if use_amp:
                 scaler.scale(loss).backward()
-                
-                # Apply gradient clipping if specified
                 if grad_clip is not None:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                
-                # Apply gradient clipping if specified
                 if grad_clip is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                
                 optimizer.step()
             
-            # Update statistics
             train_loss += loss.item() * targets.size(0)
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
         
-        # Calculate epoch metrics
-        train_loss = train_loss / total
+        train_loss /= total
         train_acc = 100. * correct / total
         
-        # Evaluate model on validation set
+        # Evaluate on validation set
         metrics_dict, _, _, all_probs = evaluate_model_with_optimization(
-            model, val_loader, criterion, device, use_amp=True
+            model, val_loader, criterion, device, use_amp=use_amp
         )
-
-        # Extract evaluation metrics
         val_loss = metrics_dict.get('val_loss', 0)
         val_acc = metrics_dict.get('val_acc', 0)
         roc_auc = metrics_dict.get('roc_auc', 0)
         pr_auc = metrics_dict.get('pr_auc', 0)
                 
-        # Update scheduler
         scheduler.step(val_loss)
         
-        # Print epoch summary
         print(f"Epoch {epoch+1}/{num_epochs}")
         print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
         print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
-        print(f"ROC AUC: {roc_auc:.4f} | PR AUC: {metrics_dict['pr_auc']:.4f}")
+        print(f"ROC AUC: {roc_auc:.4f} | PR AUC: {pr_auc:.4f}")
         
-        # Check for early stopping based on AUC-ROC
         if early_stopping(roc_auc):
             print(f"Early stopping triggered after epoch {epoch+1}")
             break
         
-        # Save best model
         if roc_auc > best_auc:
             best_auc = roc_auc
-            # Save model checkpoint
             checkpoint_path = os.path.join(model_dir, f"{model_name}_best.pth")
             torch.save(model.state_dict(), checkpoint_path)
             print(f"New best model with AUC-ROC: {best_auc:.4f}")
     
-    # Load best model for return
     best_model_path = os.path.join(model_dir, f"{model_name}_best.pth")
     if os.path.exists(best_model_path):
         try:
-            # Use map_location to avoid device mismatch issues
-            model.load_state_dict(torch.load(best_model_path, map_location=device))
+            model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
         except Exception as e:
             print(f"Warning: Could not load best model: {e}")
-            # Continue with current model state
+        return model
+
 
 def evaluate_model_with_optimization(model, data_loader, criterion, device, use_amp=True):
-    """Evaluate model with memory optimizations including mixed precision"""
+    import torch.cuda.amp as amp
+    import numpy as np
+    from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
+
     model.eval()
     val_loss = 0.0
     correct = 0
     total = 0
-    
-    # Process batches in chunks to avoid large memory allocations
     all_preds = np.array([], dtype=np.int64)
     all_targets = np.array([], dtype=np.int64)
     
-    # Get number of classes for proper array initialization
+    # Determine num_classes from the final classifier layer rather than an arbitrary module
     try:
-        # Find output dimension of final layer
-        for module in model.modules():
-            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d, torch.nn.Conv3d)):
-                if module.out_features if hasattr(module, 'out_features') else (
-                       module.out_channels if hasattr(module, 'out_channels') else 0):
-                    num_classes = module.out_features if hasattr(module, 'out_features') else module.out_channels
-        
-        if not num_classes:
-            num_classes = 2  # Default to binary if we can't determine
-    except:
-        num_classes = 2  # Default to binary if error occurs
+        num_classes = model.classifier[-1].out_features
+    except Exception as e:
+        num_classes = 2  # Fallback if not available
     
-    # Initialize all_probs with the right shape
     all_probs = np.array([]).reshape(0, num_classes)
-    
     
     with torch.no_grad():
         for batch in data_loader:
-            # Handle different input types
-            if isinstance(batch, list) and len(batch) == 3:  # Video + Pose + Label
-                frames, pose, targets = batch
-                frames, pose, targets = frames.to(device), pose.to(device), targets.to(device)
-                inputs = (frames, pose)
-            elif isinstance(batch, list) and len(batch) == 2:  # Video + Label
-                frames, targets = batch
-                frames, targets = frames.to(device), targets.to(device)
-                inputs = frames
-            else:
-                raise ValueError("Unexpected batch format")
+            # Expect batch to be (frames, targets)
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
+            inputs = frames
             
-            # Mixed precision forward pass
             with amp.autocast(enabled=use_amp):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
             
-            # Calculate probabilities
             probs = torch.nn.functional.softmax(outputs, dim=1)
             
-            # Update statistics
             val_loss += loss.item() * targets.size(0)
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             
-            # Convert to NumPy arrays
             batch_preds = predicted.cpu().numpy()
             batch_targets = targets.cpu().numpy()
             batch_probs = probs.cpu().numpy()
             
-            # Append using concatenate (more memory efficient)
             all_preds = np.concatenate([all_preds, batch_preds])
             all_targets = np.concatenate([all_targets, batch_targets])
             all_probs = np.concatenate([all_probs, batch_probs])
             
-            # Clear CUDA cache periodically if needed
+            # Optionally clear CUDA cache if needed
             if torch.cuda.is_available() and torch.cuda.memory_allocated() > 0.9 * torch.cuda.get_device_properties(device).total_memory:
                 torch.cuda.empty_cache()
     
-    # Calculate validation metrics
-    val_loss = val_loss / total
+    val_loss /= total
     val_acc = 100. * correct / total
-    
-    # Initialize metrics dictionary with defaults
     metrics_dict = {
         'val_loss': val_loss,
         'val_acc': val_acc,
@@ -811,37 +770,28 @@ def evaluate_model_with_optimization(model, data_loader, criterion, device, use_
         'recall': []
     }
     
-    # Calculate AUC metrics only if we have enough data
     if len(all_targets) > 0 and len(np.unique(all_targets)) > 1:
         try:
-            # For binary classification, use the probability of the positive class
+            # For binary classification, use probability of class 1
             positive_probs = all_probs[:, 1] if all_probs.shape[1] >= 2 else all_probs[:, 0]
-            
-            # Calculate ROC curve
-            fpr, tpr, roc_thresholds = roc_curve(all_targets, positive_probs)
-            roc_auc = auc(fpr, tpr)
-            
-            # Calculate PR curve
-            precision, recall, pr_thresholds = precision_recall_curve(all_targets, positive_probs)
-            pr_auc = average_precision_score(all_targets, positive_probs)
-            
-            # Update metrics dictionary
+            fpr, tpr, _ = roc_curve(all_targets, positive_probs)
+            roc_auc_value = auc(fpr, tpr)
+            precision, recall, _ = precision_recall_curve(all_targets, positive_probs)
+            pr_auc_value = average_precision_score(all_targets, positive_probs)
             metrics_dict.update({
-                'roc_auc': roc_auc,
-                'pr_auc': pr_auc,
+                'roc_auc': roc_auc_value,
+                'pr_auc': pr_auc_value,
                 'fpr': fpr,
                 'tpr': tpr,
                 'precision': precision,
                 'recall': recall
             })
-            
         except Exception as e:
             print(f"Warning: Could not calculate AUC metrics: {e}")
     else:
         print("Warning: Not enough unique classes to calculate AUC metrics")
     
     return metrics_dict, all_preds, all_targets, all_probs
-
 
 def clear_cuda_memory():
     """Clear CUDA memory between runs with better error handling"""
@@ -938,7 +888,7 @@ def main():
             'num_heads': [2],
             'num_layers': [1],
             'dropout': [0.1, 0.3],
-            'use_pose': [False]  # Only for transformer
+        
         },
         'cnn_lstm': {
             'lstm_hidden_size': [256],
@@ -974,7 +924,7 @@ def main():
         'simple_cnn': {'num_classes': 2},
         '3d_cnn': {'num_classes': 2, 'pretrained': True},
         '2d_cnn_lstm': {'num_classes': 2, 'pretrained': True},
-        'transformer': {'num_classes': 2},  # use_pose is in param_grid
+        'transformer': {'num_classes': 2}, 
         'cnn_lstm': {'num_classes': 2},
         'slowfast': {'num_classes': 2, 'pretrained': True},
         'r2plus1d': {'num_classes': 2, 'pretrained': True},

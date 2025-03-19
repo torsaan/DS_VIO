@@ -3,7 +3,8 @@ import os
 
 # Base configuration
 DATA_DIR = './Data'
-POSE_DIR = './Data/pose_keypoints'
+# Remove or set pose directory to None since pose data is not used.
+POSE_DIR = None  
 BATCH_SIZE = 8
 NUM_EPOCHS = 30
 NUM_FRAMES = 16
@@ -29,12 +30,11 @@ OPTIMIZERS = {
     }
 }
 
-# Model-specific hyperparameters - only include use_pose for models that support it
+# Model-specific hyperparameters (remove any "use_pose" keys)
 MODEL_CONFIGS = {
     '3d_cnn': {
         'num_classes': 2,
         'dropout_prob': 0.5,
-        'use_pose': False,
         'pretrained': True,
     },
     '2d_cnn_lstm': {
@@ -42,7 +42,6 @@ MODEL_CONFIGS = {
         'lstm_hidden_size': 512,
         'lstm_num_layers': 2,
         'dropout_prob': 0.5,
-        'use_pose': False,
         'pretrained': True,
     },
     'transformer': {
@@ -51,12 +50,10 @@ MODEL_CONFIGS = {
         'num_heads': 8,
         'num_layers': 4,
         'dropout': 0.1,
-        'use_pose': False,
     },
     'i3d': {
         'num_classes': 2,
         'dropout_prob': 0.5,
-        'use_pose': False,
         'pretrained': True,
     },
     'slowfast': {
@@ -83,8 +80,7 @@ MODEL_CONFIGS = {
     },
     'simple_cnn': {
         'num_classes': 2,
-        'dropout_prob': 0.5,
-        'use_pose': False
+        'dropout_prob': 0.5
     },
     'temporal_3d_cnn': {
         'num_classes': 2
@@ -98,7 +94,6 @@ MODEL_CONFIGS = {
     }
 }
 
-# And also update TRAINING_CONFIGS to include cnn_lstm
 TRAINING_CONFIGS = {
     '3d_cnn': {
         'optimizer': 'adam',
@@ -142,99 +137,55 @@ TRAINING_CONFIGS = {
     }
 }
 
-# Function to get model config with defaults
 def get_model_config(model_type, **overrides):
-    """
-    Get configuration for a model with optional parameter overrides
-    
-    Args:
-        model_type: Type of model
-        **overrides: Keyword arguments to override defaults
-        
-    Returns:
-        Dictionary with model configuration
-    """
     if model_type not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model type: {model_type}")
-    
-    # Start with default config
     config = MODEL_CONFIGS[model_type].copy()
-    
-    # Apply overrides
     for key, value in overrides.items():
         config[key] = value
-    
     return config
 
-# Function to get training configuration
 def get_training_config(model_type, **overrides):
-    """
-    Get training configuration for a model
-    
-    Args:
-        model_type: Type of model
-        **overrides: Additional keyword arguments to override defaults
-        
-    Returns:
-        Dictionary with training configuration
-    """
     if model_type not in TRAINING_CONFIGS:
         raise ValueError(f"Unknown model type: {model_type}")
-    
-    # Start with default config
     config = TRAINING_CONFIGS[model_type].copy()
-    
-    # Apply overrides
     for key, value in overrides.items():
         config[key] = value
-    
     return config
 
-# Function to get optimizer with correct parameters
 def get_optimizer(model, model_type=None, lr=None, optimizer_name=None, **kwargs):
-    """
-    Get optimizer instance for a model
-    
-    Args:
-        model: PyTorch model
-        model_type: Type of model (to use default optimizer)
-        lr: Learning rate (overrides default)
-        optimizer_name: Name of optimizer (overrides default)
-        **kwargs: Additional optimizer parameters
-        
-    Returns:
-        Optimizer instance
-    """
     import torch.optim as optim
+    
+    # Remap 'learning_rate' to 'lr' if provided in kwargs.
+    if 'learning_rate' in kwargs:
+        kwargs['lr'] = kwargs.pop('learning_rate')
+    
+    # Remove 'optimizer' from kwargs if present
+    if 'optimizer' in kwargs:
+        kwargs.pop('optimizer')
     
     # Determine which optimizer to use
     if optimizer_name is None and model_type is not None:
-        # Use default from training config
         training_config = get_training_config(model_type)
         optimizer_name = training_config['optimizer']
         default_lr = training_config['lr']
     else:
-        # Default to adam if not specified
         optimizer_name = optimizer_name or 'adam'
         default_lr = OPTIMIZERS[optimizer_name]['lr']
     
-    # Get base optimizer config
     if optimizer_name not in OPTIMIZERS:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
     
     config = OPTIMIZERS[optimizer_name].copy()
     
-    # Override learning rate if provided
     if lr is not None:
         config['lr'] = lr
     elif model_type is not None and 'lr' in get_training_config(model_type):
         config['lr'] = get_training_config(model_type)['lr']
     
-    # Override with any additional parameters
     for key, value in kwargs.items():
         config[key] = value
     
-    # Create optimizer
     if optimizer_name == 'adam':
         return optim.Adam(model.parameters(), **config)
     elif optimizer_name == 'sgd':
@@ -243,3 +194,4 @@ def get_optimizer(model, model_type=None, lr=None, optimizer_name=None, **kwargs
         return optim.AdamW(model.parameters(), **config)
     else:
         raise ValueError(f"Optimizer {optimizer_name} not implemented in get_optimizer")
+
