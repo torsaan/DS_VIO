@@ -155,7 +155,8 @@ def get_hyperparameters(model_type):
             'pretrained': True,
             'alpha': 8,
             'beta': 1/8,
-            'dropout_prob': 0.5
+            'dropout_prob': 0.5,
+            'fusion_type': 'late'
         }
     elif model_type == 'r2plus1d':
         return {

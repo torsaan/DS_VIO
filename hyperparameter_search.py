@@ -315,6 +315,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
     """Example function showing how to use grid search for specific models"""
     
     # Define parameter grid based on model type
+   
     if model_class.__name__ == 'Model3DCNN':
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
@@ -336,7 +337,8 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'lstm_hidden_size': [256, 512],
             'lstm_num_layers': [2, 3],
             'dropout_prob': [0.3, 0.5],
-            'learning_rate': [1e-4, 5e-4]
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
@@ -353,23 +355,25 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'num_heads': [4, 8],
             'num_layers': [2, 4],
             'dropout': [0.1, 0.3],
-            'learning_rate': [1e-4, 5e-4]
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [0.01, 0.001, 0]  # Transformers often use higher weight decay
         }
         
         base_params = {
             'num_classes': 2,
-            
         }
         
         model_type = 'transformer'
-    
+
     elif model_class.__name__ == 'SlowFastNetwork':
         param_grid = {
-            'num_classes': [2],  # Fixed for binary classification
-            'alpha': [4, 8],  # Speed ratio options
-            'beta': [1/8, 1/4],  # Channel ratio options
+            'num_classes': [2],
+            'alpha': [4, 8],
+            'beta': [1/8, 1/4],
             'dropout_prob': [0.3, 0.5],
-            'fusion_places': [['res2', 'res3', 'res4', 'res5'], ['res3', 'res4', 'res5']]
+            'fusion_type': ['late'],  # Test all three fusion types
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
@@ -383,7 +387,9 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
             'dropout_prob': [0.3, 0.5, 0.7],
-            'frozen_layers': [None, ['stem'], ['stem', 'layer1']]
+            'frozen_layers': [None, ['stem'], ['stem', 'layer1']],
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
@@ -400,13 +406,14 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'num_layers': [1, 2, 3],
             'dropout': [0.3, 0.5, 0.7],
             'activation': ['relu', 'gelu'],
-            'learning_rate': [1e-4, 5e-4]
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
             'num_classes': 2
         }
-    
+
         model_type = 'cnn_lstm'
         
     elif model_class.__name__ == 'TwoStreamNetwork':
@@ -415,7 +422,9 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
             'spatial_weight': [0.8, 1.0, 1.2],
             'temporal_weight': [1.2, 1.5, 1.8],
             'dropout_prob': [0.3, 0.5],
-            'fusion': ['late', 'conv']
+            'fusion': ['late', 'conv'],
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
@@ -430,12 +439,13 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
     elif model_class.__name__ == 'SimpleCNN':
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
-            'dropout_prob': [0.3, 0.5, 0.7]
+            'dropout_prob': [0.3, 0.5, 0.7],
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0]
         }
         
         base_params = {
             'num_classes': 2
-            
         }
         
         model_type = 'simple_cnn'
@@ -444,7 +454,9 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
     elif model_class.__name__ == 'Temporal3DCNN':
         param_grid = {
             'num_classes': [2],  # Fixed for binary classification
-            'learning_rate': [1e-4, 5e-4, 1e-3]
+            'learning_rate': [1e-4, 5e-4, 1e-3],
+            'weight_decay': [1e-4, 1e-5, 0],
+            'dropout_prob': [0.3, 0.5]  # Added dropout_prob as this should be searched too
         }
         
         base_params = {

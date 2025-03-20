@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Training Metrics Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .file-input {
+            margin-bottom: 20px;
+            padding: 20px;
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            text-align: center;
+            background-color: #f9f9f9;
+            transition: border-color 0.3s;
+        }
+        .file-input:hover {
+            border-color: #999;
+        }
+        .model-name-input {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+        }
+        .model-name-input input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .charts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        .chart-wrapper {
+            position: relative;
+            height: 400px;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 15px;
+            background-color: white;
+        }
+        .summary-section {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .summary-grid h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 10px;
+            color: #444;
+        }
+        .summary-list {
+            list-style-type: none;
+            padding: 0;
+        }
+        .summary-list li {
+            margin-bottom: 8px;
+        }
+        .summary-list li span {
+            font-weight: bold;
+        }
+        #error-message {
+            color: red;
+            margin-bottom: 20px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .instructions {
+            background-color: #e9f7fe;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #4a90e2;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #4a90e2;
+        }
+        .instructions ul {
+            margin-bottom: 0;
+        }
+        button {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #3a80d2;
+        }
+        @media (max-width: 768px) {
+            .chart-wrapper {
+                height: 350px;
+            }
+            .summary-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Training Metrics Visualization</h1>
+        <p style="text-align: center; margin-bottom: 20px;">Upload a CSV file to visualize your model training metrics with graphs displayed vertically for better visibility.</p>
+        
+        <div class="instructions">
+            <h3>Instructions</h3>
+            <p>Upload a CSV file containing training metrics with the following columns:</p>
+            <ul>
+                <li><strong>epoch</strong>: Training epoch number</li>
+                <li><strong>train_loss</strong>: Training loss</li>
+                <li><strong>train_acc</strong>: Training accuracy</li>
+                <li><strong>val_loss</strong>: Validation loss</li>
+                <li><strong>val_acc</strong>: Validation accuracy</li>
+                <li><strong>roc_auc</strong>: ROC AUC score</li>
+                <li><strong>pr_auc</strong>: PR AUC score</li>
+                <li><strong>lr</strong>: Learning rate</li>
+            </ul>
+        </div>
+        
+        <div class="model-name-input">
+            <label for="modelName"><strong>Model Name:</strong> (will be displayed in chart titles)</label>
+            <input type="text" id="modelName" placeholder="Enter model name (e.g., 2DCNN, ResNet50, LSTM)" />
+        </div>
+        
+        <div class="file-input" id="file-drop-area">
+            <p>Drag and drop your CSV file here or click to select</p>
+            <input type="file" id="csvFile" accept=".csv" style="display: none;">
+            <button id="select-file-btn">Select CSV File</button>
+        </div>
+        
+        <div id="error-message" style="display: none;"></div>
+        
+        <div id="visualization-container" style="display: none;">
+            <div class="charts-container">
+                <div class="chart-wrapper">
+                    <canvas id="accuracy-chart"></canvas>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="loss-chart"></canvas>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="auc-chart"></canvas>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="lr-chart"></canvas>
+                </div>
+            </div>
+            
+            <div class="summary-section">
+                <h2>Training Summary - ${modelName}</h2>
+                <div class="summary-grid">
+                    <div>
+                        <h3>Best Metrics</h3>
+                        <ul class="summary-list" id="best-metrics"></ul>
+                    </div>
+                    <div>
+                        <h3>Training Details</h3>
+                        <ul class="summary-list" id="training-details"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Set up file input handling
+        const fileDropArea = document.getElementById('file-drop-area');
+        const csvFileInput = document.getElementById('csvFile');
+        const selectFileBtn = document.getElementById('select-file-btn');
+        const errorMessage = document.getElementById('error-message');
+        const vizContainer = document.getElementById('visualization-container');
+        const modelNameInput = document.getElementById('modelName');
+        
+        // Charts
+        let accuracyChart, lossChart, aucChart, lrChart;
+        
+        // Event listeners for file selection
+        selectFileBtn.addEventListener('click', () => {
+            csvFileInput.click();
+        });
+        
+        csvFileInput.addEventListener('change', handleFileSelect);
+        
+        // Drag and drop handling
+        fileDropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileDropArea.style.borderColor = '#4a90e2';
+        });
+        
+        fileDropArea.addEventListener('dragleave', () => {
+            fileDropArea.style.borderColor = '#ccc';
+        });
+        
+        fileDropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileDropArea.style.borderColor = '#ccc';
+            
+            if (e.dataTransfer.files.length) {
+                csvFileInput.files = e.dataTransfer.files;
+                handleFileSelect(e);
+            }
+        });
+        
+        function handleFileSelect(event) {
+            const file = event.target.files[0] || event.dataTransfer.files[0];
+            
+            if (!file) return;
+            
+            if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) {
+                showError('Please upload a CSV file');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    processCSV(e.target.result);
+                } catch (error) {
+                    showError('Error processing the CSV file: ' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+        
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            vizContainer.style.display = 'none';
+        }
+        
+        function hideError() {
+            errorMessage.style.display = 'none';
+        }
+        
+        function processCSV(csvContent) {
+            Papa.parse(csvContent, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    if (results.errors.length > 0) {
+                        showError('Error parsing CSV: ' + results.errors[0].message);
+                        return;
+                    }
+                    
+                    try {
+                        const requiredColumns = ['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'roc_auc', 'pr_auc', 'lr'];
+                        const columns = results.meta.fields;
+                        
+                        // Check if all required columns exist
+                        const missingColumns = requiredColumns.filter(col => !columns.includes(col));
+                        if (missingColumns.length > 0) {
+                            showError(`Missing required columns: ${missingColumns.join(', ')}`);
+                            return;
+                        }
+                        
+                        let data = results.data;
+                        
+                        // Check for duplicate epochs
+                        const epochs = data.map(row => row.epoch);
+                        const uniqueEpochs = new Set(epochs);
+                        
+                        if (uniqueEpochs.size < epochs.length) {
+                            console.warn('Found duplicate epochs. Keeping only the first occurrence of each epoch.');
+                            
+                            // Keep only the first occurrence of each epoch
+                            const seenEpochs = new Set();
+                            data = data.filter(row => {
+                                if (seenEpochs.has(row.epoch)) {
+                                    return false;
+                                }
+                                seenEpochs.add(row.epoch);
+                                return true;
+                            });
+                        }
+                        
+                        // Sort by epoch
+                        data.sort((a, b) => a.epoch - b.epoch);
+                        
+                        // Visualize the data
+                        visualizeData(data);
+                        
+                        // Show the visualization container
+                        hideError();
+                        vizContainer.style.display = 'block';
+                        
+                    } catch (error) {
+                        showError('Error processing the data: ' + error.message);
+                    }
+                }
+            });
+        }
+        
+        function visualizeData(data) {
+            // Prepare data for charts
+            const epochs = data.map(row => row.epoch);
+            const modelName = modelNameInput.value.trim() || "Model";
+            
+            // Destroy existing charts if they exist
+            if (accuracyChart) accuracyChart.destroy();
+            if (lossChart) lossChart.destroy();
+            if (aucChart) aucChart.destroy();
+            if (lrChart) lrChart.destroy();
+            
+            // Create accuracy chart
+            const accuracyCtx = document.getElementById('accuracy-chart').getContext('2d');
+            accuracyChart = new Chart(accuracyCtx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'Training Accuracy',
+                            data: data.map(row => row.train_acc),
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'Validation Accuracy',
+                            data: data.map(row => row.val_acc),
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Accuracy Metrics - ${modelName}`,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch'
+                            }
+                        },
+                        y: {
+                            min: 60,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Accuracy (%)'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Create loss chart
+            const lossCtx = document.getElementById('loss-chart').getContext('2d');
+            lossChart = new Chart(lossCtx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'Training Loss',
+                            data: data.map(row => row.train_loss),
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'Validation Loss',
+                            data: data.map(row => row.val_loss),
+                            borderColor: 'rgba(255, 159, 64, 1)',
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Loss Metrics - ${modelName}`,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.parsed.y.toFixed(4)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Loss'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Create AUC chart
+            const aucCtx = document.getElementById('auc-chart').getContext('2d');
+            
+            // Calculate min AUC value for better visualization
+            const minRocAuc = Math.min(...data.map(row => row.roc_auc));
+            const minPrAuc = Math.min(...data.map(row => row.pr_auc));
+            const minAuc = Math.min(minRocAuc, minPrAuc);
+            const yMin = Math.max(0.95, minAuc - 0.01); // Lower bound at least 0.95 or slightly below min
+            
+            aucChart = new Chart(aucCtx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'ROC AUC',
+                            data: data.map(row => row.roc_auc),
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'PR AUC',
+                            data: data.map(row => row.pr_auc),
+                            borderColor: 'rgba(201, 203, 207, 1)',
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `AUC Metrics - ${modelName}`,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.parsed.y.toFixed(4)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch'
+                            }
+                        },
+                        y: {
+                            min: yMin,
+                            max: 1.01,
+                            title: {
+                                display: true,
+                                text: 'AUC'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Create learning rate chart
+            const lrCtx = document.getElementById('lr-chart').getContext('2d');
+            lrChart = new Chart(lrCtx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'Learning Rate',
+                            data: data.map(row => row.lr),
+                            borderColor: 'rgba(255, 206, 86, 1)',
+                            tension: 0.1,
+                            fill: false,
+                            stepped: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Learning Rate Schedule - ${modelName}`,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `Learning Rate: ${context.parsed.y.toExponential(6)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch'
+                            }
+                        },
+                        y: {
+                            type: 'logarithmic',
+                            title: {
+                                display: true,
+                                text: 'Learning Rate (log scale)'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Generate summary statistics
+            const bestTrainAcc = Math.max(...data.map(row => row.train_acc)).toFixed(2);
+            const bestValAcc = Math.max(...data.map(row => row.val_acc)).toFixed(2);
+            const lowestTrainLoss = Math.min(...data.map(row => row.train_loss)).toFixed(4);
+            const lowestValLoss = Math.min(...data.map(row => row.val_loss)).toFixed(4);
+            const bestRocAuc = Math.max(...data.map(row => row.roc_auc)).toFixed(4);
+            const bestPrAuc = Math.max(...data.map(row => row.pr_auc)).toFixed(4);
+            
+            const totalEpochs = data.length;
+            const startingLr = data[0].lr.toExponential(6);
+            const finalLr = data[data.length - 1].lr.toExponential(6);
+            const lrChanges = new Set(data.map(row => row.lr)).size;
+            
+            // Update the summary section
+            const bestMetricsList = document.getElementById('best-metrics');
+            bestMetricsList.innerHTML = `
+                <li><span>Model:</span> ${modelName}</li>
+                <li><span>Best Training Accuracy:</span> ${bestTrainAcc}%</li>
+                <li><span>Best Validation Accuracy:</span> ${bestValAcc}%</li>
+                <li><span>Lowest Training Loss:</span> ${lowestTrainLoss}</li>
+                <li><span>Lowest Validation Loss:</span> ${lowestValLoss}</li>
+                <li><span>Best ROC AUC:</span> ${bestRocAuc}</li>
+                <li><span>Best PR AUC:</span> ${bestPrAuc}</li>
+            `;
+            
+            const trainingDetailsList = document.getElementById('training-details');
+            trainingDetailsList.innerHTML = `
+                <li><span>Total Epochs:</span> ${totalEpochs}</li>
+                <li><span>Starting Learning Rate:</span> ${startingLr}</li>
+                <li><span>Final Learning Rate:</span> ${finalLr}</li>
+                <li><span>Learning Rate Changes:</span> ${lrChanges}</li>
+            `;
+        }
+    </script>
+</body>
+</html>
