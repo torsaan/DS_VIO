@@ -6,7 +6,6 @@ import torch
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
-
 from train import train_model, clear_cuda_memory
 from dataloader import get_dataloaders
 from evaluations import evaluate_model
@@ -20,18 +19,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import datetime
 from train import EarlyStopping
 import argparse as args
-
-from Models.model_simplecnn import SimpleCNN
 from Models.model_2dcnn_lstm import Model2DCNNLSTM
 from Models.model_3dcnn import Model3DCNN
 from Models.model_transformer import VideoTransformer
 from Models.model_slowfast import SlowFastNetwork
-from Models.model_r2plus1d import R2Plus1DNet
-from Models.violence_cnn_lstm import ViolenceCNNLSTM
-from Models.model_two_stream import TwoStreamNetwork
-from Models.model_Temporal3DCNN import Temporal3DCNN
-from Models.model_i3d import TransferLearningI3D    
-from Models.model_hybrid import ModelHybrid
 
 
 import warnings
@@ -318,7 +309,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
    
     if model_class.__name__ == 'Model3DCNN':
         param_grid = {
-            'num_classes': [2],  # Fixed for binary classification
+            'num_classes': [2],  #binary classification
             'dropout_prob': [0.3, 0.5, 0.7],
             'learning_rate': [1e-4, 5e-4, 1e-3],
             'weight_decay': [1e-4, 1e-5]
@@ -333,7 +324,7 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         
     elif model_class.__name__ == 'Model2DCNNLSTM':
         param_grid = {
-            'num_classes': [2],  # Fixed for binary classification
+            'num_classes': [2],  #binary classification
             'lstm_hidden_size': [256, 512],
             'lstm_num_layers': [2, 3],
             'dropout_prob': [0.3, 0.5],
@@ -417,22 +408,24 @@ def get_best_hyperparameters(model_class, train_paths, train_labels, val_paths, 
         model_type = 'cnn_lstm'
         
     elif model_class.__name__ == 'TwoStreamNetwork':
+        # Now that we have learning_rate and weight_decay, focus on the other parameters
         param_grid = {
-            'num_classes': [2],  # Fixed for binary classification
-            'spatial_weight': [0.8, 1.0, 1.2],
-            'temporal_weight': [1.2, 1.5, 1.8],
-            'dropout_prob': [0.3, 0.5],
-            'fusion': ['late', 'conv'],
-            'learning_rate': [1e-4, 5e-4, 1e-3],
-            'weight_decay': [1e-4, 1e-5, 0]
+            'num_classes': [2],  # Fixed
+            'spatial_weight': [0.8, 1.0, 1.2],  # Add different weighting options
+            'temporal_weight': [1.0, 1.5, 2.0],  # Add different weighting options
+            'fusion': ['late', 'mid', 'early'],  # Try different fusion strategies
+            'spatial_backbone': ['r3d_18', 'r2plus1d_18']  # Try different backbone options
         }
-        
+
+        # Apply previously found best parameters from first search
         base_params = {
             'num_classes': 2,
             'pretrained': True,
-            'spatial_backbone': 'r3d_18'
+            'dropout_prob': 0.3,  # From previous best results
+            'learning_rate': 0.0001,  # From previous best results
+            'weight_decay': 0.0001,  # From previous best results
         }
-        
+
         model_type = 'two_stream'
         
     # Add SimpleCNN support
@@ -866,17 +859,11 @@ def main():
     
     # Define model classes dictionary
     model_classes = {
-        'simple_cnn': SimpleCNN,
         '2d_cnn_lstm': Model2DCNNLSTM,
         '3d_cnn': Model3DCNN,
         'transformer': VideoTransformer,
         'slowfast': SlowFastNetwork,
-        'r2plus1d': R2Plus1DNet,
-        'cnn_lstm': ViolenceCNNLSTM,
-        'two_stream': TwoStreamNetwork,
-        'temporal_3d_cnn': Temporal3DCNN,
-        'i3d': TransferLearningI3D,
-        'hybrid': ModelHybrid
+        'two_stream': TwoStreamNetwork
     }
     
     # Filter model classes based on args.model_types
@@ -884,9 +871,6 @@ def main():
     
     # Create parameter grids with memory-optimized values - model specific parameters only!
     param_grids = {
-        'simple_cnn': {
-            'dropout_prob': [0.3, 0.5]
-        },
         '3d_cnn': {
             'dropout_prob': [0.3, 0.5]
         },
@@ -902,48 +886,26 @@ def main():
             'dropout': [0.1, 0.3],
         
         },
-        'cnn_lstm': {
-            'lstm_hidden_size': [256],
-            'num_layers': [1],
-            'dropout': [0.3, 0.5]
-        },
+       
         'slowfast': {
             'alpha': [4],
             'beta': [1/8],
             'dropout_prob': [0.3]
         },
-        'r2plus1d': {
-            'dropout_prob': [0.3, 0.5]
-        },
         'two_stream': {
             'spatial_weight': [0.8],
             'temporal_weight': [1.2],
             'dropout_prob': [0.3]
-        },
-        'temporal_3d_cnn': {
-            # Minimal params for testing
-        },
-        'i3d': {
-            'dropout_prob': [0.3]
-        },
-        'hybrid': {
-            'dropout': [0.3]
         }
     }
     
     # Create base params - common parameters for initialization
     base_params = {
-        'simple_cnn': {'num_classes': 2},
         '3d_cnn': {'num_classes': 2, 'pretrained': True},
         '2d_cnn_lstm': {'num_classes': 2, 'pretrained': True},
         'transformer': {'num_classes': 2}, 
-        'cnn_lstm': {'num_classes': 2},
         'slowfast': {'num_classes': 2, 'pretrained': True},
-        'r2plus1d': {'num_classes': 2, 'pretrained': True},
-        'two_stream': {'num_classes': 2, 'pretrained': True},
-        'temporal_3d_cnn': {'num_classes': 2},
-        'i3d': {'num_classes': 2},
-        'hybrid': {'num_classes': 2}
+        'two_stream': {'num_classes': 2, 'pretrained': True}
     }
     
     # Run sequential search

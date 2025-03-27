@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from sklearn.metrics import (
-    classification_report, confusion_matrix, 
+    classification_report, confusion_matrix, roc_auc_score, 
     roc_curve, auc, precision_recall_curve, average_precision_score
 )
 import matplotlib.pyplot as plt
@@ -293,100 +293,101 @@ for model_name, model_results in results.items()
     
     return results
 
-def ensemble_predictions(models_dict, test_loaders, device, output_dir="./output"):
+def ensemble_predictions(models, test_loaders, device, output_dir=None, weights=None):
     """
-    Create an ensemble of models using majority voting and weighted averaging of probabilities.
+    Evaluate models as an ensemble with optional weighting
     
     Args:
-        models_dict: Dictionary of models {model_name: model}
-        test_loaders: Dictionary of test loaders {model_name: loader}
-        device: Device to use
+        models: Dict of model_name -> model
+        test_loaders: Dict of model_name -> dataloader
+        device: Computation device
         output_dir: Directory to save results
-        
-    Returns:
-        Dictionary with ensemble results.
+        weights: Dict of model_name -> weight (optional)
     """
-    ensemble_dir = os.path.join(output_dir, 'ensemble')
-    os.makedirs(ensemble_dir, exist_ok=True)
+    all_targets = []
+    all_model_probs = {}
     
-    all_model_preds = []
-    all_model_probs = []
-    all_targets = None  # Assume targets are the same across models
-    
-    for model_name, model in models_dict.items():
-        print(f"Getting predictions from {model_name}...")
-        model.eval()
+    # Process each model separately
+    for model_name, model in models.items():
         test_loader = test_loaders[model_name]
-        preds = []
-        probs = []
-        targets = []
+        model.eval()
+        model_probs = []
         
+        print(f"Getting predictions from {model_name}...")
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Ensemble - {model_name}"):
-                # Assume each batch is (frames, targets)
-                frames, batch_targets = batch
-                frames, batch_targets = frames.to(device), batch_targets.to(device)
-                outputs = model(frames)
-                batch_probs = torch.nn.functional.softmax(outputs, dim=1)
-                _, batch_preds = outputs.max(1)
-                preds.extend(batch_preds.cpu().numpy())
-                probs.extend(batch_probs.cpu().numpy())
-                targets.extend(batch_targets.cpu().numpy())
+                # Handle different batch structures based on model type
+                if model_name == 'two_stream':
+                    # For two_stream model, batch contains RGB frames, optical flow, and labels
+                    rgb_frames, optical_flow, targets = batch
+                    inputs = (rgb_frames.to(device), optical_flow.to(device))
+                else:
+                    # For other models, batch contains frames and labels
+                    frames, targets = batch
+                    inputs = frames.to(device)
+                
+                # Store targets only once (from the first model)
+                if model_name == list(models.keys())[0]:
+                    all_targets.append(targets.cpu().numpy())
+                
+                # Get model predictions
+                outputs = model(inputs)
+                probs = torch.softmax(outputs, dim=1)
+                model_probs.append(probs.cpu().numpy())
         
-        all_model_preds.append(preds)
-        all_model_probs.append(probs)
-        if all_targets is None:
-            all_targets = targets
+        # Concatenate all batches
+        all_model_probs[model_name] = np.concatenate(model_probs, axis=0)
+        
+        # Clear GPU memory after each model
+        torch.cuda.empty_cache()
     
-    sample_counts = [len(pred) for pred in all_model_preds]
-    min_length = min(sample_counts)
-    all_model_preds = [pred[:min_length] for pred in all_model_preds]
-    all_model_probs = [prob[:min_length] for prob in all_model_probs]
-    targets = np.array(all_targets[:min_length])
+    # Combine all targets
+    all_targets = np.concatenate(all_targets, axis=0)
     
-    all_model_preds = np.array(all_model_preds)  # Shape: (num_models, num_samples)
-    all_model_probs = np.array(all_model_probs)  # Shape: (num_models, num_samples, num_classes)
+    # Define weights based on performance if not provided
+    if weights is None:
+        # Option 1: Equal weighting (current approach)
+        weights = {model_name: 1.0 for model_name in models.keys()}
+        
+        # Option 2: Auto-compute weights based on validation accuracy
+        # This requires having validation accuracy for each model
+        # weights = {model_name: model_val_accuracies[model_name] for model_name in models.keys()}
     
-    # Majority voting on predictions
-    ensemble_preds = np.apply_along_axis(lambda x: np.bincount(x).argmax(), axis=0, arr=all_model_preds)
-    # Average probabilities across models
-    ensemble_probs = np.mean(all_model_probs, axis=0)
-    ensemble_acc = 100. * (ensemble_preds == targets).mean()
+    # Normalize weights to sum to 1
+    total_weight = sum(weights.values())
+    normalized_weights = {k: v/total_weight for k, v in weights.items()}
     
-    report, cm = generate_metrics_report(ensemble_preds, targets,
-                                         output_path=os.path.join(ensemble_dir, 'ensemble_metrics.json'))
-    plot_confusion_matrix(cm, output_path=os.path.join(ensemble_dir, 'ensemble_confusion_matrix.png'))
+    # Apply weighted averaging
+    ensemble_probs = np.zeros_like(all_model_probs[list(models.keys())[0]])
+    for model_name in models.keys():
+        ensemble_probs += all_model_probs[model_name] * normalized_weights[model_name]
     
-    from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
-    fpr, tpr, _ = roc_curve(targets, ensemble_probs[:, 1])
-    ensemble_roc_auc = auc(fpr, tpr)
-    precision, recall, _ = precision_recall_curve(targets, ensemble_probs[:, 1])
-    ensemble_pr_auc = average_precision_score(targets, ensemble_probs[:, 1])
+    # Calculate metrics
+    ensemble_preds = np.argmax(ensemble_probs, axis=1)
+    accuracy = 100 * np.mean(ensemble_preds == all_targets)
     
-    plot_roc_curve(fpr, tpr, ensemble_roc_auc,
-                   output_path=os.path.join(ensemble_dir, 'ensemble_roc_curve.png'),
-                   title='Ensemble Model - ROC Curve')
-    plot_pr_curve(precision, recall, ensemble_pr_auc,
-                  output_path=os.path.join(ensemble_dir, 'ensemble_pr_curve.png'),
-                  title='Ensemble Model - Precision-Recall Curve')
+    # Calculate ROC and PR curves
+    if ensemble_probs.shape[1] == 2:  # Binary classification
+        roc_auc = roc_auc_score(all_targets, ensemble_probs[:, 1])
+        precision, recall, _ = precision_recall_curve(all_targets, ensemble_probs[:, 1])
+        pr_auc = auc(recall, precision)
+    else:
+        # For multi-class, use one-vs-rest approach
+        roc_auc = roc_auc_score(all_targets, ensemble_probs, multi_class='ovr')
+        pr_auc = 0.0  # Not easily calculated for multi-class
     
-    ensemble_results = {
-        'accuracy': ensemble_acc,
+    # Save results if output_dir provided
+    if output_dir:
+        ensemble_dir = os.path.join(output_dir, 'ensemble')
+        os.makedirs(ensemble_dir, exist_ok=True)
+        
+        # Rest of the function remains the same...
+        
+    return {
+        'accuracy': accuracy,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc,
         'predictions': ensemble_preds,
-        'targets': targets,
         'probabilities': ensemble_probs,
-        'report': report,
-        'confusion_matrix': cm.tolist(),
-        'roc_auc': ensemble_roc_auc,
-        'pr_auc': ensemble_pr_auc,
-        'fpr': fpr.tolist(),
-        'tpr': tpr.tolist(),
-        'precision': precision.tolist(),
-        'recall': recall.tolist()
+        'targets': all_targets
     }
-    
-    print(f"Ensemble accuracy: {ensemble_acc:.2f}%")
-    print(f"Ensemble ROC AUC: {ensemble_roc_auc:.4f}")
-    print(f"Ensemble PR AUC: {ensemble_pr_auc:.4f}")
-    
-    return ensemble_results

@@ -11,15 +11,26 @@ import hyperparameters as hp
 from Models.model_3dcnn import Model3DCNN
 from Models.model_2dcnn_lstm import Model2DCNNLSTM
 from Models.model_transformer import VideoTransformer
-from Models.model_i3d import TransferLearningI3D
 from Models.model_two_stream import TwoStreamNetwork
 from Models.model_slowfast import SlowFastNetwork
-from Models.model_r2plus1d import R2Plus1DNet
-from Models.model_simplecnn import SimpleCNN
-from Models.model_hybrid import ModelHybrid
-from Models.model_Temporal3DCNN import Temporal3DCNN
-from Models.violence_cnn_lstm import ViolenceCNNLSTM
+import numpy as np
 import json
+
+
+def set_all_seeds(seed=42):
+    """Set all random seeds for reproducible results"""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+
 
 def parse_args():
     """Parse command line arguments"""
@@ -40,7 +51,7 @@ def parse_args():
                         help="Number of worker processes for data loading")
     parser.add_argument("--resume", action="store_true",
                         help="Resume training from checkpoint if available")
-    parser.add_argument("--early_stopping", type=int, default=7,
+    parser.add_argument("--early_stopping", type=int, default=10,
                         help="Patience for early stopping (epochs)")
     parser.add_argument("--hp_search", action="store_true",
                         help="Perform hyperparameter search before training")
@@ -53,7 +64,15 @@ def parse_args():
                              'simple_cnn', 'temporal_3d_cnn', 'slowfast', 
                              'r2plus1d', 'two_stream'],
                     help="Model types to train")
+    parser.add_argument("--learning_rate", type=float, default=None,
+                      help="Custom learning rate to use for training")
+    parser.add_argument("--weight_decay", type=float, default=None,
+                      help="Custom weight decay to use for training")
+    #parser.add_argument("--flow_dir", type=str, default=None,
+    #                  help="Directory containing pre-computed optical flow for two-stream model")
+    
     return parser.parse_args()
+
 
 def setup_device(gpu_id):
     """Set up computation device (CPU or GPU) with memory cleanup"""
@@ -90,27 +109,13 @@ def initialize_model(model_type, device, **overrides):
     elif model_type == 'transformer':
         from Models.model_transformer import VideoTransformer
         model = VideoTransformer(**config).to(device)
-    elif model_type == 'i3d':
-        from Models.model_i3d import TransferLearningI3D
-        model = TransferLearningI3D(**config).to(device)
-    elif model_type == 'simple_cnn':
-        from Models.model_simplecnn import SimpleCNN
-        model = SimpleCNN(**config).to(device)
-    elif model_type == 'temporal_3d_cnn':
-        from Models.model_Temporal3DCNN import Temporal3DCNN
-        model = Temporal3DCNN(**config).to(device)
     elif model_type == 'slowfast':
         from Models.model_slowfast import SlowFastNetwork
         model = SlowFastNetwork(**config).to(device)
-    elif model_type == 'r2plus1d':
-        from Models.model_r2plus1d import R2Plus1DNet
-        model = R2Plus1DNet(**config).to(device)
     elif model_type == 'two_stream':
         from Models.model_two_stream import TwoStreamNetwork
         model = TwoStreamNetwork(**config).to(device)
-    elif model_type == 'cnn_lstm':
-        from Models.model_2dcnn_lstm import ViolenceCNNLSTM
-        model = ViolenceCNNLSTM(**config).to(device)
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -143,59 +148,34 @@ def get_hyperparameters(model_type):
             'num_layers': 4,
             'dropout': 0.1
         }
-    elif model_type == 'i3d':
-        return {
-            'num_classes': 2,
-            'dropout_prob': 0.5,
-            'pretrained': True
-        }
     elif model_type == 'slowfast':
         return {
             'num_classes': 2,
             'pretrained': True,
-            'alpha': 8,
-            'beta': 1/8,
-            'dropout_prob': 0.5,
+            'alpha': 4,
+            'beta': 0.125,
+            'dropout_prob': 0.3,
             'fusion_type': 'late'
-        }
-    elif model_type == 'r2plus1d':
-        return {
-            'num_classes': 2,
-            'pretrained': True,
-            'dropout_prob': 0.5,
-            'frozen_layers': None
         }
     elif model_type == 'two_stream':
         return {
             'num_classes': 2,
-            'spatial_weight': 1.0,
-            'temporal_weight': 1.5,
+            'spatial_weight': 1.0,    # Equal weight to start
+            'temporal_weight': 1.0,   # Equal weight to start
             'pretrained': True,
             'spatial_backbone': 'r3d_18',
-            'dropout_prob': 0.5,
-            'fusion': 'late'
-        }
-    elif model_type == 'simple_cnn':
-        return {
-            'num_classes': 2
-        }
-    elif model_type == 'temporal_3d_cnn':
-        return {
-            'num_classes': 2
-        }
-    elif model_type == 'cnn_lstm':
-        return {
-            'num_classes': 2,
-            'lstm_hidden_size': 512,
-            'num_layers': 2,
-            'dropout': 0.5,
-            'activation': 'relu'
+            'dropout_prob': 0.3,      # From your best hyperparameters
+            'fusion': 'late'          # Simplest fusion strategy
         }
     else:
         return {'num_classes': 2}
 
+
 def main():
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
     args = parse_args()
+    set_all_seeds(42)
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
     
     os.makedirs(args.output_dir, exist_ok=True)
     device = setup_device(args.gpu)
@@ -211,20 +191,24 @@ def main():
         print(f"\n{'='*20} Setting up {model_type} {'='*20}")
         
         # Since pose data is no longer used, we set current_pose_dir to None
-        current_pose_dir = None
         
-        # Get dataloaders (do not pass a pose_dir)
+        if model_type == 'two_stream':
+            # Use smaller batch size
+            adjusted_batch_size = args.batch_size // 2
+            print(f"Using adjusted batch size {adjusted_batch_size} for two_stream model")
+            
         train_loader, val_loader, test_loader = get_dataloaders(
-            train_paths, train_labels, 
-            val_paths, val_labels, 
-            test_paths, test_labels,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            target_fps=10,
-            num_frames=16,
-            model_type=model_type,
-            pin_memory=args.pin_memory
-        )
+        train_paths, train_labels, 
+        val_paths, val_labels, 
+        test_paths, test_labels,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        target_fps=15,
+        num_frames=16,  # Change from 32 to 16
+        model_type=model_type,
+        pin_memory=args.pin_memory,
+        flow_dir=None  # Add this line back in
+    )
         
         # Hyperparameter search if requested
         hyperparams = None
@@ -243,30 +227,16 @@ def main():
             elif model_type == 'transformer':
                 from Models.model_transformer import VideoTransformer
                 model_class = VideoTransformer
-            elif model_type == 'i3d':
-                from Models.model_i3d import TransferLearningI3D
-                model_class = TransferLearningI3D
-            elif model_type == 'simple_cnn':
-                from Models.model_simplecnn import SimpleCNN
-                model_class = SimpleCNN
-            elif model_type == 'temporal_3d_cnn':
-                from Models.model_Temporal3DCNN import Temporal3DCNN
-                model_class = Temporal3DCNN
+
+
             elif model_type == 'slowfast':
                 from Models.model_slowfast import SlowFastNetwork
                 model_class = SlowFastNetwork
-            elif model_type == 'r2plus1d':
-                from Models.model_r2plus1d import R2Plus1DNet
-                model_class = R2Plus1DNet
+
             elif model_type == 'two_stream':
                 from Models.model_two_stream import TwoStreamNetwork
                 model_class = TwoStreamNetwork
-            elif model_type == 'cnn_lstm':
-                from Models.violence_cnn_lstm import ViolenceCNNLSTM
-                model_class = ViolenceCNNLSTM
-            elif model_type == 'hybrid':
-                from Models.model_hybrid import ModelHybrid
-                model_class = ModelHybrid
+
             
             if model_class is not None:
                 search_results = get_best_hyperparameters(
@@ -350,6 +320,12 @@ def main():
         model_params = {k: v for k, v in hyperparams.items() if k not in optimizer_param_names}
         optimizer_params = {k: v for k, v in hyperparams.items() if k in optimizer_param_names}
 
+        # Add learning_rate and weight_decay to optimizer_params if specified on command line
+        if args.learning_rate is not None:
+            optimizer_params['learning_rate'] = args.learning_rate
+        if args.weight_decay is not None:
+            optimizer_params['weight_decay'] = args.weight_decay
+
         # Remove any 'use_pose' key if present
         model_params.pop('use_pose', None)
 
@@ -371,6 +347,17 @@ def main():
                 elif checkpoint_files:
                     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_files[0])
         
+        if model_type == 'two_stream':
+            # Reset optimizer with two-stream specific parameters
+            optimizer_params = {
+                'learning_rate': 0.001,  # Lower learning rate
+                'weight_decay': 0.05,   # Use weight decay to prevent overfitting
+                'optimizer': 'adamw'      # Try AdamW for better performance
+            }
+            
+            # Increase gradient clipping for stability
+            grad_clip = 1.0
+
         print(f"\n{'='*20} Training {model_type} {'='*20}")
         trained_model = train_model(
             model_name=model_type,

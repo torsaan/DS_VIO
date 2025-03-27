@@ -21,3 +21,9 @@
 *.log
 *.pyc
 *.joblib
+*.jpg
+/predictions
+/output
+
+
+

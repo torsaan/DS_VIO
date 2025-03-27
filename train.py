@@ -93,7 +93,7 @@ def clear_cuda_memory():
         print(f"GPU Memory: {allocated_before:.3f}GB → {allocated_after:.3f}GB allocated, "
               f"{reserved_before:.3f}GB → {reserved_after:.3f}GB reserved")
 
-def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None, grad_clip=None):
+def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None, grad_clip=1.0):
     model.train()
     running_loss = 0.0
     correct = 0
@@ -101,16 +101,26 @@ def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None
     
     progress_bar = tqdm(data_loader, desc="Training")
     for batch in progress_bar:
-        # Since pose is removed, every batch is (frames, targets)
-        frames, targets = batch
-        frames, targets = frames.to(device), targets.to(device)
-        inputs = frames  # Only frames are used
+        # Handle both 2-tuple (frames, targets) and 3-tuple (frames, flow, targets)
+        if len(batch) == 3:
+            frames, flow, targets = batch
+            frames, flow, targets = frames.to(device), flow.to(device), targets.to(device)
+            inputs = (frames, flow)
+        else:
+            frames, targets = batch
+            frames, targets = frames.to(device), targets.to(device)
+            inputs = frames
         
         optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
+        
+        # Use mixed precision for faster training and memory efficiency
+        with torch.amp.autocast(device_type='cuda'):
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+        
         loss.backward()
         
+        # Apply gradient clipping for stability
         if grad_clip is not None:
             nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             
@@ -134,67 +144,59 @@ def train_epoch(model, data_loader, optimizer, criterion, device, scheduler=None
     epoch_acc = 100. * correct / total
     return epoch_loss, epoch_acc
 
-def validate(model, data_loader, criterion, device):
+def validate(model, val_loader, criterion, device, model_type='3d_cnn'):
+    """
+    Validate model on validation set
+    """
     model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
+    val_loss = 0.0
+    val_acc = 0.0
     all_preds = []
-    all_probs = []
     all_targets = []
+    all_probs = []
+    total = 0
+    correct = 0
     
     with torch.no_grad():
-        for batch in tqdm(data_loader, desc="Validation"):
-            # Now always assume batch is (frames, targets)
-            frames, targets = batch
-            frames, targets = frames.to(device), targets.to(device)
-            inputs = frames
-            
+        for batch in tqdm(val_loader, desc="Validation", leave=False):
+            # Handle different batch structures based on model_type
+            if model_type == 'two_stream':
+                frames, flow, targets = batch
+                frames, flow, targets = frames.to(device), flow.to(device), targets.to(device)
+                inputs = (frames, flow)
+            else:
+                frames, targets = batch
+                frames, targets = frames.to(device), targets.to(device)
+                inputs = frames
+                
+            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             
-            probs = torch.nn.functional.softmax(outputs, dim=1)
-            
-            running_loss += loss.item() * targets.size(0)
-            _, predicted = outputs.max(1)
+            # Calculate metrics
+            val_loss += loss.item() * targets.size(0)
+            _, predicted = torch.max(outputs, 1)
             total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            correct += (predicted == targets).sum().item()
             
+            # Store predictions and targets for metrics
             all_preds.extend(predicted.cpu().numpy())
-            # For binary classification, use class 1 probability
-            all_probs.extend(probs[:, 1].cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
+            
+            # Store probabilities for ROC/PR curves
+            probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
+            all_probs.extend(probs)
     
-    val_loss = running_loss / total
-    val_acc = 100. * correct / total
-    
-    # Calculate AUC-ROC
-    try:
-        fpr, tpr, _ = roc_curve(all_targets, all_probs)
-        roc_auc = auc(fpr, tpr)
-        
-        # Calculate Precision-Recall AUC
-        precision, recall, _ = precision_recall_curve(all_targets, all_probs)
-        pr_auc = average_precision_score(all_targets, all_probs)
-    except Exception as e:
-        print(f"Warning: Could not calculate AUC: {e}")
-        roc_auc = 0.0
-        pr_auc = 0.0
-        fpr, tpr = [], []
-        precision, recall = [], []
+    # Calculate metrics
+    val_accuracy = 100.0 * correct / total
+    val_loss = val_loss / total
     
     metrics = {
         'val_loss': val_loss,
-        'val_acc': val_acc,
-        'roc_auc': roc_auc,
-        'pr_auc': pr_auc,
-        'fpr': fpr,
-        'tpr': tpr,
-        'precision': precision,
-        'recall': recall
+        'val_accuracy': val_accuracy
     }
     
-    return metrics, np.array(all_preds), np.array(all_targets), np.array(all_probs)
+    return metrics, all_preds, all_targets, all_probs
 
 def plot_roc_curve(fpr, tpr, roc_auc, epoch, output_dir, model_name):
     """Plot and save ROC curve"""
@@ -333,8 +335,8 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
     )
     
     # Set up learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs, eta_min=1e-6
     )
     
     # Initialize or load from checkpoint
@@ -344,6 +346,12 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         model, optimizer, scheduler, start_epoch, saved_metrics = load_checkpoint(
             model, optimizer, scheduler, checkpoint_path, device
         )
+        
+        # After loading the optimizer from checkpoint:
+        if 'learning_rate' in kwargs:
+            print(f"Updating optimizer learning rate to {kwargs['learning_rate']}")
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = kwargs['learning_rate']
     
     # Set up logger
     logger = CSVLogger(
@@ -370,7 +378,7 @@ def train_model(model_name, model, train_loader, val_loader, num_epochs=None,
         
         # Validate
         val_metrics, all_preds, all_targets, all_probs = validate(
-            model, val_loader, criterion, device
+            model, val_loader, criterion, device, model_type=model_name
         )
         
         # Extract validation metrics

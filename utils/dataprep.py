@@ -9,7 +9,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 import json
 
-# Add these constants at the top of the file
+
 RANDOM_SEED = 42  # Fixed seed for reproducible splits
 TEST_SIZE = 0.2   # 20% for test set
 VAL_SIZE = 0.15   # 15% of remaining for validation

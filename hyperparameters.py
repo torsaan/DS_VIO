@@ -51,23 +51,14 @@ MODEL_CONFIGS = {
         'num_layers': 4,
         'dropout': 0.1,
     },
-    'i3d': {
-        'num_classes': 2,
-        'dropout_prob': 0.5,
-        'pretrained': True,
-    },
+
     'slowfast': {
         'num_classes': 2,
         'alpha': 8,
         'beta': 1/8,
         'dropout_prob': 0.5,
         'pretrained': True,
-    },
-    'r2plus1d': {
-        'num_classes': 2,
-        'dropout_prob': 0.5,
-        'frozen_layers': None,
-        'pretrained': True,
+    
     },
     'two_stream': {
         'num_classes': 2,
@@ -77,20 +68,6 @@ MODEL_CONFIGS = {
         'fusion': 'late',
         'spatial_backbone': 'r3d_18',
         'pretrained': True,
-    },
-    'simple_cnn': {
-        'num_classes': 2,
-        'dropout_prob': 0.5
-    },
-    'temporal_3d_cnn': {
-        'num_classes': 2
-    },
-    'cnn_lstm': {
-        'num_classes': 2,
-        'lstm_hidden_size': 512,
-        'num_layers': 2,
-        'dropout': 0.5,
-        'activation': 'relu'
     }
 }
 
@@ -107,31 +84,18 @@ TRAINING_CONFIGS = {
         'optimizer': 'adamw',
         'lr': 0.0002
     },
-    'i3d': {
-        'optimizer': 'adam',
-        'lr': 0.0001
-    },
+
     'slowfast': {
         'optimizer': 'sgd',
         'lr': 0.001
     },
-    'r2plus1d': {
-        'optimizer': 'adam',
-        'lr': 0.0001
-    },
+
     'two_stream': {
         'optimizer': 'adam',
         'lr': 0.0001
     },
-    'simple_cnn': {
-        'optimizer': 'adam',
-        'lr': 0.0001
-    },
+
     'temporal_3d_cnn': {
-        'optimizer': 'adam',
-        'lr': 0.0001
-    },
-    'cnn_lstm': {
         'optimizer': 'adam',
         'lr': 0.0001
     }
