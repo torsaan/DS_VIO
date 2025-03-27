@@ -3,8 +3,6 @@ import os
 
 # Base configuration
 DATA_DIR = './Data'
-# Remove or set pose directory to None since pose data is not used.
-POSE_DIR = None  
 BATCH_SIZE = 8
 NUM_EPOCHS = 30
 NUM_FRAMES = 16
@@ -30,7 +28,7 @@ OPTIMIZERS = {
     }
 }
 
-# Model-specific hyperparameters (remove any "use_pose" keys)
+# Model-specific hyperparameters
 MODEL_CONFIGS = {
     '3d_cnn': {
         'num_classes': 2,
@@ -51,14 +49,12 @@ MODEL_CONFIGS = {
         'num_layers': 4,
         'dropout': 0.1,
     },
-
     'slowfast': {
         'num_classes': 2,
         'alpha': 8,
         'beta': 1/8,
         'dropout_prob': 0.5,
         'pretrained': True,
-    
     },
     'two_stream': {
         'num_classes': 2,
@@ -84,18 +80,11 @@ TRAINING_CONFIGS = {
         'optimizer': 'adamw',
         'lr': 0.0002
     },
-
     'slowfast': {
         'optimizer': 'sgd',
         'lr': 0.001
     },
-
     'two_stream': {
-        'optimizer': 'adam',
-        'lr': 0.0001
-    },
-
-    'temporal_3d_cnn': {
         'optimizer': 'adam',
         'lr': 0.0001
     }
@@ -158,4 +147,3 @@ def get_optimizer(model, model_type=None, lr=None, optimizer_name=None, **kwargs
         return optim.AdamW(model.parameters(), **config)
     else:
         raise ValueError(f"Optimizer {optimizer_name} not implemented in get_optimizer")
-

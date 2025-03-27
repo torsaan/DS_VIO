@@ -30,21 +30,17 @@ def set_all_seeds(seed=42):
         torch.backends.cudnn.benchmark = False
 
 
-
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Violence Detection Training")
     parser.add_argument("--data_dir", type=str, default="./Data/Processed/standardized", 
                         help="Directory containing the violence detection dataset")
-    # Removed --pose_dir argument
     parser.add_argument("--output_dir", type=str, default="./output", 
                         help="Directory to save model outputs")
     parser.add_argument("--batch_size", type=int, default=hp.BATCH_SIZE, 
                         help="Batch size for training")
     parser.add_argument("--num_epochs", type=int, default=hp.NUM_EPOCHS, 
                         help="Number of training epochs")
-    # Removed --use_pose argument
     parser.add_argument("--gpu", type=int, default=0, 
                         help="GPU ID to use (-1 for CPU)")
     parser.add_argument("--num_workers", type=int, default=4,
@@ -60,16 +56,14 @@ def parse_args():
     parser.add_argument("--pin_memory", action="store_true",
                         help="Use pin_memory in DataLoader for faster GPU transfers")
     parser.add_argument("--model_types", nargs="+", 
-                    default=['3d_cnn', '2d_cnn_lstm', 'transformer', 'i3d', 
-                             'simple_cnn', 'temporal_3d_cnn', 'slowfast', 
-                             'r2plus1d', 'two_stream'],
+                    default=['3d_cnn', '2d_cnn_lstm', 'transformer', 'slowfast', 'two_stream'],
                     help="Model types to train")
     parser.add_argument("--learning_rate", type=float, default=None,
                       help="Custom learning rate to use for training")
     parser.add_argument("--weight_decay", type=float, default=None,
                       help="Custom weight decay to use for training")
-    #parser.add_argument("--flow_dir", type=str, default=None,
-    #                  help="Directory containing pre-computed optical flow for two-stream model")
+    parser.add_argument("--flow_dir", type=str, default=None,
+                      help="Directory containing pre-computed optical flow for two-stream model")
     
     return parser.parse_args()
 
@@ -93,12 +87,9 @@ def setup_device(gpu_id):
 def initialize_model(model_type, device, **overrides):
     """
     Initialize model based on model type with hyperparameters from central configuration.
-    Pose data is no longer used.
     """
     from hyperparameters import get_model_config
     config = get_model_config(model_type, **overrides)
-    # Remove any use_pose parameter if present
-    config.pop('use_pose', None)
     
     if model_type == '3d_cnn':
         from Models.model_3dcnn import Model3DCNN
@@ -115,7 +106,6 @@ def initialize_model(model_type, device, **overrides):
     elif model_type == 'two_stream':
         from Models.model_two_stream import TwoStreamNetwork
         model = TwoStreamNetwork(**config).to(device)
-
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -125,7 +115,7 @@ def initialize_model(model_type, device, **overrides):
     return model
 
 def get_hyperparameters(model_type):
-    """Get hyperparameters for a specific model type (pose data removed)."""
+    """Get hyperparameters for a specific model type."""
     if model_type == '3d_cnn':
         return {
             'num_classes': 2,
@@ -175,7 +165,6 @@ def main():
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
     args = parse_args()
     set_all_seeds(42)
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
     
     os.makedirs(args.output_dir, exist_ok=True)
     device = setup_device(args.gpu)
@@ -190,25 +179,26 @@ def main():
     for model_type in args.model_types:
         print(f"\n{'='*20} Setting up {model_type} {'='*20}")
         
-        # Since pose data is no longer used, we set current_pose_dir to None
-        
         if model_type == 'two_stream':
             # Use smaller batch size
             adjusted_batch_size = args.batch_size // 2
             print(f"Using adjusted batch size {adjusted_batch_size} for two_stream model")
-            
+            current_batch_size = adjusted_batch_size
+        else:
+            current_batch_size = args.batch_size
+        
         train_loader, val_loader, test_loader = get_dataloaders(
-        train_paths, train_labels, 
-        val_paths, val_labels, 
-        test_paths, test_labels,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        target_fps=15,
-        num_frames=16,  # Change from 32 to 16
-        model_type=model_type,
-        pin_memory=args.pin_memory,
-        flow_dir=None  # Add this line back in
-    )
+            train_paths, train_labels, 
+            val_paths, val_labels, 
+            test_paths, test_labels,
+            batch_size=current_batch_size,
+            num_workers=args.num_workers,
+            target_fps=15,
+            num_frames=16,
+            model_type=model_type,
+            pin_memory=args.pin_memory,
+            flow_dir=args.flow_dir if model_type == 'two_stream' else None
+        )
         
         # Hyperparameter search if requested
         hyperparams = None
@@ -227,28 +217,24 @@ def main():
             elif model_type == 'transformer':
                 from Models.model_transformer import VideoTransformer
                 model_class = VideoTransformer
-
-
             elif model_type == 'slowfast':
                 from Models.model_slowfast import SlowFastNetwork
                 model_class = SlowFastNetwork
-
             elif model_type == 'two_stream':
                 from Models.model_two_stream import TwoStreamNetwork
                 model_class = TwoStreamNetwork
-
             
             if model_class is not None:
                 search_results = get_best_hyperparameters(
-                model_class,
-                train_paths[:len(train_paths)//4],
-                train_labels[:len(train_labels)//4],
-                val_paths,
-                val_labels,
-                output_dir=os.path.join(args.output_dir, f"hp_search_{model_type}"),
-                num_epochs=args.num_epochs,
-                batch_size=args.batch_size
-            )
+                    model_class,
+                    train_paths[:len(train_paths)//4],
+                    train_labels[:len(train_labels)//4],
+                    val_paths,
+                    val_labels,
+                    output_dir=os.path.join(args.output_dir, f"hp_search_{model_type}"),
+                    num_epochs=args.num_epochs,
+                    batch_size=current_batch_size
+                )
                 hyperparams = search_results['best_params']
                 print(f"Best hyperparameters: {hyperparams}")
                 
@@ -277,43 +263,10 @@ def main():
         else:
             # Normal training mode, use defaults
             hyperparams = get_hyperparameters(model_type)
-            # Add this section for handling resume mode
-            if args.resume:
-                # Check if we can load hyperparams from a saved file
-                checkpoint_dir = os.path.join(args.output_dir, model_type)
-                if os.path.exists(os.path.join(checkpoint_dir, 'best_hyperparams.json')):
-                    with open(os.path.join(checkpoint_dir, 'best_hyperparams.json'), 'r') as f:
-                        hyperparams = json.load(f)
-                    print(f"Loaded hyperparameters for {model_type} from checkpoint.")
-                elif hyperparams is None:
-                    # If no saved hyperparams and no search done, use defaults
-                    hyperparams = get_hyperparameters(model_type)
-                    print(f"Using default hyperparameters for {model_type}.")
 
-            print("Aggressively clearing GPU memory before model initialization...")
-        # Clear all cache
+        print("Aggressively clearing GPU memory before model initialization...")
+        # Clear memory
         clear_cuda_memory()
-        # Force garbage collection
-        import gc
-        gc.collect()
-        # Delete any other large objects that might be in memory
-        if 'model_class' in locals():
-            del model_class
-        # Reset CUDA statistics
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.reset_accumulated_memory_stats()
-            # Force sync to ensure all CUDA operations are completed
-            torch.cuda.synchronize()
-        # Wait a moment to ensure memory is freed
-        import time
-        time.sleep(2)
-        # Check memory now
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / (1024 ** 3)
-            reserved = torch.cuda.memory_reserved() / (1024 ** 3)
-            print(f"GPU Memory after clearing: {allocated:.3f} GB allocated, {reserved:.3f} GB reserved")
 
         # Add this code to filter out optimizer parameters:
         optimizer_param_names = ['learning_rate', 'weight_decay', 'momentum', 'beta1', 'beta2']
@@ -325,9 +278,6 @@ def main():
             optimizer_params['learning_rate'] = args.learning_rate
         if args.weight_decay is not None:
             optimizer_params['weight_decay'] = args.weight_decay
-
-        # Remove any 'use_pose' key if present
-        model_params.pop('use_pose', None)
 
         # Initialize model (with ONLY model parameters)
         model = initialize_model(model_type, device, **model_params)
@@ -357,7 +307,7 @@ def main():
             
             # Increase gradient clipping for stability
             grad_clip = 1.0
-
+            
         print(f"\n{'='*20} Training {model_type} {'='*20}")
         trained_model = train_model(
             model_name=model_type,

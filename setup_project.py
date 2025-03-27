@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--splits_path", type=str, default="./data_splits.json",
                         help="Path to save/load data splits")
     parser.add_argument("--verify_only", action="store_true",
-                  help="Only verify standardized videos without regenerating them"),
+                        help="Only verify standardized videos without regenerating them"),
     parser.add_argument("--skip_standardization", action="store_true",
                         help="Skip video standardization step")
     return parser.parse_args()
@@ -162,7 +162,6 @@ def main():
             print("Verifying standardized videos...")
             verify_standardized_videos(args.output_dir, args.num_frames, args.fps)
             return 
-    
     
     # Standardize videos
     if not args.skip_standardization:

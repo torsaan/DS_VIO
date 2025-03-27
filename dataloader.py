@@ -6,7 +6,6 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from utils.augmentor import VideoAugmenter
-import random
 from tqdm import tqdm
 from pathlib import Path
 
@@ -34,7 +33,7 @@ class EnhancedViolenceDataset(Dataset):
         self.training = training
         self.preload_to_ram = preload_to_ram
 
-        # Initialize video augmenter (no separate pose augmenter needed)
+        # Initialize video augmenter
         if self.augment and self.training:
             self.video_augmenter = VideoAugmenter(
                 brightness_range=0.3,
@@ -102,7 +101,7 @@ class EnhancedViolenceDataset(Dataset):
             else:
                 frames = self.read_video(video_path)
             frames_tensor = self.process_frames(frames)
-            # Return only frames and label (pose data removed)
+            # Return only frames and label
             return frames_tensor, torch.tensor(label, dtype=torch.long)
         except Exception as e:
             print(f"Error processing video {video_path}: {e}")
@@ -111,193 +110,6 @@ class EnhancedViolenceDataset(Dataset):
             else:
                 frames_tensor = torch.zeros((self.num_frames, 3, self.frame_height, self.frame_width), dtype=torch.float32)
             return frames_tensor, torch.tensor(label, dtype=torch.long)
-
-def get_transforms(frame_height=224, frame_width=224):
-    train_transform = transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    val_transform = transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    return train_transform, val_transform
-
-def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
-                   test_video_paths, test_labels, batch_size=8,
-                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn',
-                   pin_memory=True, persistent_workers=True, prefetch_factor=2,
-                   preload_to_ram=False):
-    train_transform, val_transform = get_transforms()
-    
-    if preload_to_ram:
-        max_samples = 500
-        train_video_paths = train_video_paths[:min(len(train_video_paths), max_samples)]
-        train_labels = train_labels[:min(len(train_labels), max_samples)]
-        print(f"Preloading {len(train_video_paths)} training samples to RAM...")
-    
-    train_dataset = EnhancedViolenceDataset(
-        train_video_paths, train_labels, 
-        transform=train_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=True, model_type=model_type,
-        training=True, preload_to_ram=preload_to_ram
-    )
-    
-    val_dataset = EnhancedViolenceDataset(
-        val_video_paths, val_labels, 
-        transform=val_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=False, model_type=model_type,
-        training=False, preload_to_ram=False
-    )
-    
-    test_dataset = EnhancedViolenceDataset(
-        test_video_paths, test_labels,
-        transform=val_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=False, model_type=model_type,
-        training=False, preload_to_ram=False
-    )
-    
-    use_persistent = persistent_workers and num_workers > 0
-    
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        drop_last=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None
-    )
-    
-    return train_loader, val_loader, test_loader
-
-
-
-
-def get_transforms(frame_height=224, frame_width=224):
-    """
-    Create transform pipelines for training and validation.
-    """
-    train_transform = transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    val_transform = transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    return train_transform, val_transform
-
-def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
-                   test_video_paths, test_labels, batch_size=8,
-                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn',
-                   pin_memory=True, persistent_workers=True, prefetch_factor=2,
-                   preload_to_ram=False, flow_dir=None):
-    """
-    Create data loaders for training, validation, and testing.
-    Added flow_dir parameter to load pre-computed optical flow.
-    """
-    train_transform, val_transform = get_transforms()
-    
-    # Choose dataset class based on whether we have flow data
-    if flow_dir and model_type == 'two_stream':
-        dataset_class = EnhancedViolenceDatasetWithFlow
-        print(f"Using dataset with pre-computed flow from {flow_dir}")
-    else:
-        dataset_class = EnhancedViolenceDataset
-    
-    if preload_to_ram:
-        max_samples = 500
-        train_video_paths = train_video_paths[:min(len(train_video_paths), max_samples)]
-        train_labels = train_labels[:min(len(train_labels), max_samples)]
-    
-    # Create datasets
-    train_dataset = dataset_class(
-        train_video_paths, train_labels, flow_dir=flow_dir,
-        transform=train_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=True, model_type=model_type,
-        training=True, preload_to_ram=preload_to_ram
-    )
-    
-    val_dataset = dataset_class(
-        val_video_paths, val_labels, flow_dir=flow_dir,
-        transform=val_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=False, model_type=model_type,
-        training=False, preload_to_ram=False
-    )
-    
-    test_dataset = dataset_class(
-        test_video_paths, test_labels, flow_dir=flow_dir,
-        transform=val_transform, num_frames=num_frames, 
-        target_fps=target_fps, augment=False, model_type=model_type,
-        training=False, preload_to_ram=False
-    )
-    
-    # Only use persistent_workers if num_workers > 0
-    use_persistent = persistent_workers and num_workers > 0
-    
-    # Create loaders with performance optimizations
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        drop_last=True  # Drop last incomplete batch to ensure consistent batch size
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=use_persistent,
-        prefetch_factor=prefetch_factor if num_workers > 0 else None
-    )
-    
-    return train_loader, val_loader, test_loader
-
-
 
 class EnhancedViolenceDatasetWithFlow(Dataset):
     def __init__(self, video_paths, labels, flow_dir=None,
@@ -312,7 +124,6 @@ class EnhancedViolenceDatasetWithFlow(Dataset):
             video_paths: List of video file paths
             labels: List of class labels
             flow_dir: Directory containing pre-computed optical flow (.flow.pt files)
-            ...
         """
         super().__init__()
         self.video_paths = video_paths
@@ -441,124 +252,102 @@ class EnhancedViolenceDatasetWithFlow(Dataset):
             
             return frames_tensor, flow_tensor, torch.tensor(label, dtype=torch.long)
 
-def get_dataloaders(train_paths, train_labels, val_paths, val_labels, test_paths, test_labels,
-                   batch_size=16, num_workers=4, target_fps=15, num_frames=16,
-                   model_type='3d_cnn', pin_memory=True, flow_dir=None):
-    """Get dataloaders for training, validation and testing"""
+def get_transforms(frame_height=224, frame_width=224):
+    """
+    Create transform pipelines for training and validation.
+    """
+    train_transform = transforms.Compose([
+        transforms.Resize((frame_height, frame_width)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
     
-    # Create datasets based on model type
-    if model_type == 'two_stream':
+    val_transform = transforms.Compose([
+        transforms.Resize((frame_height, frame_width)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    return train_transform, val_transform
+
+def get_dataloaders(train_video_paths, train_labels, val_video_paths, val_labels, 
+                   test_video_paths, test_labels, batch_size=8,
+                   num_workers=4, target_fps=10, num_frames=16, model_type='3d_cnn',
+                   pin_memory=True, persistent_workers=True, prefetch_factor=2,
+                   preload_to_ram=False, flow_dir=None):
+    """
+    Create data loaders for training, validation, and testing.
+    Added flow_dir parameter to load pre-computed optical flow.
+    """
+    train_transform, val_transform = get_transforms()
+    
+    # Choose dataset class based on whether we have flow data
+    if flow_dir and model_type == 'two_stream':
+        dataset_class = EnhancedViolenceDatasetWithFlow
         print(f"Using dataset with pre-computed flow from {flow_dir}")
-        train_dataset = EnhancedViolenceDatasetWithFlow(
-            video_paths=train_paths,
-            labels=train_labels,
-            flow_dir=flow_dir,
-            transform=get_train_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=True,
-            model_type=model_type,
-            training=True
-        )
-        
-        val_dataset = EnhancedViolenceDatasetWithFlow(
-            video_paths=val_paths,
-            labels=val_labels,
-            flow_dir=flow_dir,
-            transform=get_val_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=False,
-            model_type=model_type,
-            training=False
-        )
-        
-        test_dataset = EnhancedViolenceDatasetWithFlow(
-            video_paths=test_paths,
-            labels=test_labels,
-            flow_dir=flow_dir,
-            transform=get_val_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=False,
-            model_type=model_type,
-            training=False
-        )
     else:
-        # Standard dataset for all other models
-        train_dataset = EnhancedViolenceDataset(
-            video_paths=train_paths,
-            labels=train_labels,
-            transform=get_train_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=True,
-            model_type=model_type,
-            training=True
-        )
-        
-        val_dataset = EnhancedViolenceDataset(
-            video_paths=val_paths,
-            labels=val_labels,
-            transform=get_val_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=False,
-            model_type=model_type,
-            training=False
-        )
-        
-        test_dataset = EnhancedViolenceDataset(
-            video_paths=test_paths,
-            labels=test_labels,
-            transform=get_val_transform(model_type),
-            num_frames=num_frames,
-            target_fps=target_fps,
-            augment=False,
-            model_type=model_type,
-            training=False
-        )
+        dataset_class = EnhancedViolenceDataset
     
-    # Create and return data loaders
+    if preload_to_ram:
+        max_samples = 500
+        train_video_paths = train_video_paths[:min(len(train_video_paths), max_samples)]
+        train_labels = train_labels[:min(len(train_labels), max_samples)]
+    
+    # Create datasets
+    train_dataset = dataset_class(
+        train_video_paths, train_labels, flow_dir=flow_dir,
+        transform=train_transform, num_frames=num_frames, 
+        target_fps=target_fps, augment=True, model_type=model_type,
+        training=True, preload_to_ram=preload_to_ram
+    )
+    
+    val_dataset = dataset_class(
+        val_video_paths, val_labels, flow_dir=flow_dir,
+        transform=val_transform, num_frames=num_frames, 
+        target_fps=target_fps, augment=False, model_type=model_type,
+        training=False, preload_to_ram=False
+    )
+    
+    test_dataset = dataset_class(
+        test_video_paths, test_labels, flow_dir=flow_dir,
+        transform=val_transform, num_frames=num_frames, 
+        target_fps=target_fps, augment=False, model_type=model_type,
+        training=False, preload_to_ram=False
+    )
+    
+    # Only use persistent_workers if num_workers > 0
+    use_persistent = persistent_workers and num_workers > 0
+    
+    # Create loaders with performance optimizations
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=True
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        drop_last=True  # Drop last incomplete batch to ensure consistent batch size
     )
     
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
         num_workers=num_workers,
-        pin_memory=pin_memory
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
     
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
         num_workers=num_workers,
-        pin_memory=pin_memory
+        pin_memory=pin_memory,
+        persistent_workers=use_persistent,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
     
     return train_loader, val_loader, test_loader
-
-def get_train_transform(model_type, frame_height=224, frame_width=224):
-    """Get training transforms for the specified model type"""
-    return transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-def get_val_transform(model_type, frame_height=224, frame_width=224):
-    """Get validation transforms for the specified model type"""
-    return transforms.Compose([
-        transforms.Resize((frame_height, frame_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
