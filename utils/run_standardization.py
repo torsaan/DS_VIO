@@ -66,8 +66,8 @@ def main():
                         help='Skip video standardization step')
     parser.add_argument('--max_workers', type=int, default=4,
                         help='Maximum worker processes for parallel processing')
-    parser.add_argument('--pose_extraction', action='store_true',
-                        help='Run pose extraction after standardization')
+    parser.add_argument('--flow_extraction', action='store_true',
+                        help='Run optical flow extraction after standardization')
     
     args = parser.parse_args()
     
@@ -76,7 +76,7 @@ def main():
     
     standardized_dir = os.path.join(args.output_dir, 'standardized')
     analysis_dir = os.path.join(args.output_dir, 'analysis')
-    pose_dir = os.path.join(args.output_dir, 'pose')
+    flow_dir = os.path.join(args.output_dir, 'flow')
     
     os.makedirs(standardized_dir, exist_ok=True)
     os.makedirs(analysis_dir, exist_ok=True)
@@ -124,48 +124,29 @@ def main():
             "Step 3: Analyzing standardized dataset and comparing with original"
         )
     
-    # Step 4: Extract poses if requested
-    if args.pose_extraction:
-        os.makedirs(pose_dir, exist_ok=True)
+    # Step 4: Extract optical flow if requested
+    if args.flow_extraction:
+        os.makedirs(flow_dir, exist_ok=True)
         
-        # Check if we have a pose extraction script
-        pose_script = None
-        for potential_script in ['utils.pose_extraction', 'utils.multi_person_pose', 'utils.pose_on_frames']:
-            try:
-                if potential_script.endswith('.py'):
-                    # Direct Python file
-                    if os.path.exists(potential_script):
-                        pose_script = potential_script
-                        break
-                else:
-                    # Try importing module
-                    __import__(potential_script)
-                    pose_script = potential_script
-                    break
-            except (ImportError, ModuleNotFoundError):
-                continue
+        # Check if we have a flow extraction script
+        flow_script = 'utils.precompute_optical_flow'
         
-        if pose_script:
-            run_command(
-                [
-                    'python', '-m', pose_script,
-                    '--video_dir' if 'pose.py' in pose_script else '--input_dir', standardized_dir,
-                    '--output_dir', pose_dir,
-                    '--fps', str(args.fps)
-                ],
-                "Step 4: Extracting pose keypoints"
-            )
-        else:
-            print("\nWarning: Could not find pose extraction script. Please run pose extraction manually.")
-            print("Suggested command:")
-            print(f"python -m your_pose_extraction_script --input_dir {standardized_dir} --output_dir {pose_dir} --fps {args.fps}")
+        run_command(
+            [
+                'python', '-m', flow_script,
+                '--video_dir', standardized_dir,
+                '--output_dir', flow_dir,
+                '--num_frames', str(16)  # Fixed to 16 frames for consistency
+            ],
+            "Step 4: Extracting optical flow"
+        )
     
     print("\nStandardization pipeline completed!")
     print(f"Original videos: {args.input_dir}")
     print(f"Standardized videos: {standardized_dir}")
     print(f"Analysis results: {analysis_dir}")
-    if args.pose_extraction:
-        print(f"Pose keypoints: {pose_dir}")
+    if args.flow_extraction:
+        print(f"Optical flow data: {flow_dir}")
 
 if __name__ == "__main__":
     main()

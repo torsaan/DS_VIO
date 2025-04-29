@@ -22,7 +22,7 @@ def format_input_tensor(tensor, model_type):
     formatted_tensor = tensor
     
     # For 3D CNNs, the input should be [B, C, T, H, W]
-    if model_type in ['3d_cnn', 'i3d', 'slowfast', 'r2plus1d', 'two_stream']:
+    if model_type in ['3d_cnn', 'slowfast']:
         # Permute from [B, T, C, H, W] to [B, C, T, H, W]
         formatted_tensor = tensor.permute(0, 2, 1, 3, 4)
     
@@ -94,9 +94,9 @@ def get_model_input_shape(model_type, batch_size=1, num_frames=16, height=224, w
     Returns:
         String describing the expected input shape
     """
-    if model_type in ['3d_cnn', 'i3d', 'slowfast', 'r2plus1d']:
+    if model_type in ['3d_cnn', 'slowfast']:
         return f"[{batch_size}, 3, {num_frames}, {height}, {width}] (BCTHW)"
-    elif model_type in ['2d_cnn_lstm', 'transformer', 'cnn_lstm']:
+    elif model_type in ['2d_cnn_lstm', 'transformer']:
         return f"[{batch_size}, {num_frames}, 3, {height}, {width}] (BTCHW)"
     elif model_type == 'two_stream':
         rgb = f"[{batch_size}, 3, {num_frames}, {height}, {width}] (BCTHW)"

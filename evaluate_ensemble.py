@@ -38,6 +38,8 @@ def parse_args():
                         help="Workers for data loading")
     parser.add_argument("--gpu", type=int, default=0, 
                         help="GPU ID (-1 for CPU)")
+    parser.add_argument("--flow_dir", type=str, default=None,
+                        help="Directory containing pre-computed optical flow for two-stream model")
     
     return parser.parse_args()
 
@@ -125,17 +127,24 @@ def main():
         print(f"\n{'='*20} Loading {model_type} {'='*20}")
         
         # Load data loaders for this model type
+        flow_dir = args.flow_dir if model_type == 'two_stream' else None
+        
+        # Adjust batch size for two_stream model
+        current_batch_size = args.batch_size
+        if model_type == 'two_stream':
+            current_batch_size = args.batch_size // 2
+        
         _, _, test_loader = get_dataloaders(
             train_paths, train_labels, 
             val_paths, val_labels, 
             test_paths, test_labels,
-            batch_size=args.batch_size if model_type != 'two_stream' else args.batch_size // 2,
+            batch_size=current_batch_size,
             num_workers=args.num_workers,
             target_fps=15,
             num_frames=16,
             model_type=model_type,
             pin_memory=False,  # Change from True to False
-            flow_dir=None
+            flow_dir=flow_dir
         )
         
         # Load the trained model
