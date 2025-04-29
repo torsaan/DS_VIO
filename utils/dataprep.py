@@ -3,35 +3,44 @@ import os
 import glob
 from sklearn.model_selection import train_test_split
 import json
+import os
+import glob
+from pathlib import Path
+from sklearn.model_selection import train_test_split
+import json
 
-# Add these constants at the top of the file
+
 RANDOM_SEED = 42  # Fixed seed for reproducible splits
 TEST_SIZE = 0.2   # 20% for test set
 VAL_SIZE = 0.15   # 15% of remaining for validation
 NUM_FRAMES = 16   # Fixed number of frames per video
 
 
-def prepare_violence_nonviolence_data(data_root, test_size=TEST_SIZE, val_size=VAL_SIZE, random_state=RANDOM_SEED):
+def prepare_violence_nonviolence_data(data_root, test_size=0.2, val_size=0.15, random_state=42):
     """
     Prepare data paths and labels from the VioNonVio directory structure.
     Ensures consistent splits using a fixed random seed.
+    Uses pathlib.Path for cross-platform path handling.
     """
+    # Convert input path to Path object for cross-platform compatibility
+    data_root = Path(data_root)
+    
     # Define paths to the VioNonVio folders
-    violence_dir = os.path.join(data_root, "Violence")
-    nonviolence_dir = os.path.join(data_root, "NonViolence")
+    violence_dir = data_root / "Violence"
+    nonviolence_dir = data_root / "NonViolence"
         
     # Collect video paths and labels
     video_paths = []
     labels = []
     
     # Find Violence videos (with V_ prefix) - label 1
-    violence_videos = glob.glob(os.path.join(violence_dir, "V_*.mp4"))
-    video_paths.extend(violence_videos)
+    violence_videos = list(violence_dir.glob("V_*.mp4"))
+    video_paths.extend([str(path) for path in violence_videos])
     labels.extend([1] * len(violence_videos))
     
     # Find NonViolence videos (with NV_ prefix) - label 0
-    nonviolence_videos = glob.glob(os.path.join(nonviolence_dir, "NV_*.mp4"))
-    video_paths.extend(nonviolence_videos)
+    nonviolence_videos = list(nonviolence_dir.glob("NV_*.mp4"))
+    video_paths.extend([str(path) for path in nonviolence_videos])
     labels.extend([0] * len(nonviolence_videos))
     
     # Print summary of data found
@@ -102,6 +111,7 @@ def save_data_splits(data_root, output_path="./data_splits.json"):
 def load_data_splits(splits_path="./data_splits.json"):
     """
     Load data splits from a JSON file.
+    Normalizes paths for the current platform.
     """
     # Load from file
     with open(splits_path, 'r') as f:
@@ -114,6 +124,11 @@ def load_data_splits(splits_path="./data_splits.json"):
     val_labels = data_splits["val"]["labels"]
     test_paths = data_splits["test"]["paths"]
     test_labels = data_splits["test"]["labels"]
+    
+    # Normalize paths for current OS
+    train_paths = [os.path.normpath(path) for path in train_paths]
+    val_paths = [os.path.normpath(path) for path in val_paths]
+    test_paths = [os.path.normpath(path) for path in test_paths]
     
     # Print split summary
     print(f"Training set: {len(train_paths)} videos")

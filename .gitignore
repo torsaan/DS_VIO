@@ -15,3 +15,15 @@
 *.csv
 *.pt
 *.pth
+/hyperparam_search
+*.png
+*.json 
+*.log
+*.pyc
+*.joblib
+*.jpg
+/predictions
+/output
+
+
+
